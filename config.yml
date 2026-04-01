@@ -1,0 +1,66 @@
+# Copyright (c) 2026 ivfzhou
+# ipasigner is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#          http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
+# 待签名文件路径。
+ipaFilePath: /path/to/ipafile
+# 签名结果文件路径。
+destinationIpaFilePath: /path/to/signedipafile
+# 签名证书文件路径。
+certificateFilePath: /path/to/p12file
+# 签名证书密码。
+certificatePassword: password
+# 描述文件路径。
+mobileProvisionFilePath: /path/to/mobileprovisionfile
+# 选填，dylib 文件路径。
+dylibFilePath: /path/to/dylibfile
+# 选填，弱注入。
+weakInject: false
+# 选填，Universal Link 域名。
+universalLinkDomains:
+  - applinks:www.qq.com
+  - applinks:www.baidu.com
+# 选填，Associated Domain 关联域名。
+associatedDomains:
+  - webcredentials:www.qq.com
+  - applinks:www.baidu.com
+# 钥匙串访问组。
+keychainGroups:
+  - TEAMID.*
+  - TEAMID.com.qq.com
+# 苹果安全应用组。
+securityGroups:
+  - group.com.qq.com
+  - group.com.qq.com
+# 选填，appx 包对应的子描述文件，用于多签的情况。
+appxProvisions:
+  AppName1: /path/to/mobileprovision
+  AppName2: /path/to/mobileprovision
+# 选填，更换 bundleId。
+newBundleId: com.test.myApp
+# 选填，更换 bundle 名。
+newBundleName: myApp
+# 选填，更换 bundle 版本号。
+newBundleVersion: 1
+# 选填，替换所有 info.plist 的对应配置，上下级关系的字段使用 . 隔开，数组形式则在元素同级使用纯数字作为标识。
+addPlistStringKey:
+  WKCompanionAppBundleIdentifier: com.qq.com
+  NSExtension.NSExtensionAttributes.WKAppBundleIdentifier: com.qq.com
+  CFBundleURLTypes.0.CFBundleURLName: weixin
+  CFBundleURLTypes.0.CFBundleTypeRole: Editor
+  CFBundleURLTypes.1.CFBundleURLName: weibo
+  CFBundleURLTypes.1.CFBundleTypeRole: Editor
+# 选填，移除对应 info.plist 的 key 对应配置，以数组形式声明。
+removePlistStringKey:
+  - WKCompanionAppBundleIdentifier
+  - NSExtension.NSExtensionAttributes.WKAppBundleIdentifier
+# 选填，在 .app 文件夹下创建新文件。
+additionalFileName: signature.lock
+# 选填，在 .app 文件夹下创建的新文件中的内容。
+additionalFileData: abcd

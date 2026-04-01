@@ -1,0 +1,47 @@
+# Copyright (c) 2026 ivfzhou
+# ipasigner is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#          http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
+set(ARGPARSE_VERSION v3.2)
+set(ARGPARSE_HEADER_NAME argparse/argparse.hpp)
+set(ARGPARSE_DIRECTORY ${DEPENDENCIES_DIRECTORY}/argparse)
+set(ARGPARSE_INSTALL_DIRECTORY ${ARGPARSE_DIRECTORY}/install)
+set(ARGPARSE_HEADERS_DIRECTORY ${ARGPARSE_INSTALL_DIRECTORY}/include)
+
+find_path(
+        ARGPARSE_INCLUDE_DIRECTORY
+        NAMES ${ARGPARSE_HEADER_NAME}
+        PATHS ${ARGPARSE_HEADERS_DIRECTORY}
+        NO_DEFAULT_PATH
+)
+
+if (ARGPARSE_INCLUDE_DIRECTORY)
+    message(STATUS "found argparse include directory ${ARGPARSE_INCLUDE_DIRECTORY}")
+else ()
+    include(ExternalProject)
+    set(ARGPARSE_BUILD_DIRECTORY ${ARGPARSE_DIRECTORY}/build)
+    set(ARGPARSE_SOURCE_DIRECTORY ${ARGPARSE_DIRECTORY}/source)
+    ExternalProject_Add(
+            argparse
+            PREFIX ${ARGPARSE_DIRECTORY}
+            URL https://github.com/p-ranav/argparse/archive/refs/tags/${ARGPARSE_VERSION}.zip
+            SOURCE_DIR ${ARGPARSE_SOURCE_DIRECTORY}
+            BINARY_DIR ${ARGPARSE_BUILD_DIRECTORY}
+            CONFIGURE_COMMAND ${CMAKE_COMMAND} --fresh -S ${ARGPARSE_SOURCE_DIRECTORY} -B ${ARGPARSE_BUILD_DIRECTORY}
+            -DCMAKE_INSTALL_PREFIX=${ARGPARSE_INSTALL_DIRECTORY}
+            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+            -DARGPARSE_BUILD_TESTS=OFF
+            BUILD_COMMAND ${CMAKE_COMMAND} --build ${ARGPARSE_BUILD_DIRECTORY} --parallel --config ${CMAKE_BUILD_TYPE} --clean-first
+            INSTALL_COMMAND ${CMAKE_COMMAND} --build ${ARGPARSE_BUILD_DIRECTORY} --config ${CMAKE_BUILD_TYPE} --target install
+    )
+    set(ARGPARSE_INCLUDE_DIRECTORY ${ARGPARSE_HEADERS_DIRECTORY})
+    list(APPEND DEPENDENCIES ${ARGPARSE_NAME})
+endif ()
+
+include_directories(${ARGPARSE_INCLUDE_DIRECTORY})

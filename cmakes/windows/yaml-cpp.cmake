@@ -1,0 +1,68 @@
+# Copyright (c) 2026 ivfzhou
+# ipasigner is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#          http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
+set(YAML_CPP_VERSION yaml-cpp-0.9.0)
+set(YAML_CPP_HEADER_NAME yaml-cpp/yaml.h)
+set(YAML_CPP_LIBRARY_NAME yaml-cpp.lib)
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(YAML_CPP_LIBRARY_NAME yaml-cppd.lib)
+endif ()
+set(YAML_CPP_DIRECTORY ${DEPENDENCIES_DIRECTORY}/yaml-cpp)
+set(YAML_CPP_INSTALL_DIRECTORY ${YAML_CPP_DIRECTORY}/install)
+set(YAML_CPP_LIBRARY_DIRECTORY ${YAML_CPP_INSTALL_DIRECTORY}/lib)
+set(YAML_CPP_HEADERS_DIRECTORY ${YAML_CPP_INSTALL_DIRECTORY}/include)
+
+find_library(
+        YAML_CPP_LIBRARY
+        NAMES ${YAML_CPP_LIBRARY_NAME}
+        PATHS ${YAML_CPP_LIBRARY_DIRECTORY}
+        NO_DEFAULT_PATH
+)
+
+find_path(
+        YAML_CPP_INCLUDE_DIRECTORY
+        NAMES ${YAML_CPP_HEADER_NAME}
+        PATHS ${YAML_CPP_HEADERS_DIRECTORY}
+        NO_DEFAULT_PATH
+)
+
+if (YAML_CPP_LIBRARY AND YAML_CPP_INCLUDE_DIRECTORY)
+    message(STATUS "found yaml-cpp library ${YAML_CPP_LIBRARY}")
+    message(STATUS "found yaml-cpp include directory ${YAML_CPP_INCLUDE_DIRECTORY}")
+else ()
+    include(ExternalProject)
+    set(YAML_CPP_BUILD_DIRECTORY ${YAML_CPP_DIRECTORY}/build)
+    set(YAML_CPP_SOURCE_DIRECTORY ${YAML_CPP_DIRECTORY}/source)
+    ExternalProject_Add(
+            yaml-cpp
+            PREFIX ${YAML_CPP_DIRECTORY}
+            URL https://github.com/jbeder/yaml-cpp/archive/refs/tags/${YAML_CPP_VERSION}.zip
+            SOURCE_DIR ${YAML_CPP_SOURCE_DIRECTORY}
+            BINARY_DIR ${YAML_CPP_BUILD_DIRECTORY}
+            CONFIGURE_COMMAND ${CMAKE_COMMAND} --fresh -S ${YAML_CPP_SOURCE_DIRECTORY} -B ${YAML_CPP_BUILD_DIRECTORY}
+            -DCMAKE_INSTALL_PREFIX=${YAML_CPP_INSTALL_DIRECTORY}
+            -DCMAKE_CONFIGURATION_TYPES=${CMAKE_BUILD_TYPE}
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=${CMAKE_MSVC_RUNTIME_LIBRARY}
+            -DCMAKE_CXX_FLAGS_RELEASE=${COMPILER_CXX_FLAGS_RELEASE}
+            -DCMAKE_CXX_FLAGS_DEBUG=${COMPILER_CXX_FLAGS_DEBUG}
+            -DYAML_MSVC_SHARED_RT=OFF
+            -DYAML_BUILD_SHARED_LIBS=OFF
+            -DYAML_CPP_BUILD_TESTS=OFF
+            BUILD_COMMAND ${CMAKE_COMMAND} --build ${YAML_CPP_BUILD_DIRECTORY} --config ${CMAKE_BUILD_TYPE} --parallel --clean-first
+            INSTALL_COMMAND ${CMAKE_COMMAND} --build ${YAML_CPP_BUILD_DIRECTORY} --config ${CMAKE_BUILD_TYPE} --target install
+    )
+    set(YAML_CPP_LIBRARY ${YAML_CPP_LIBRARY_DIRECTORY}/${YAML_CPP_LIBRARY_NAME})
+    set(YAML_CPP_INCLUDE_DIRECTORY ${YAML_CPP_HEADERS_DIRECTORY})
+    list(APPEND DEPENDENCIES ${YAML_CPP_NAME})
+endif ()
+
+add_definitions(-DYAML_CPP_STATIC_DEFINE=1)
+include_directories(${YAML_CPP_INCLUDE_DIRECTORY})
+list(APPEND LIBRARIES ${YAML_CPP_LIBRARY})

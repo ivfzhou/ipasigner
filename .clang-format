@@ -1,0 +1,19 @@
+---
+Language: Cpp # 指定格式化的语言为 C++
+BasedOnStyle: LLVM # 基于 LLVM 代码风格作为基础样式
+AccessModifierOffset: -2 # 访问修饰符（public/private/protected）相对于类体缩进偏移 -2 个空格
+AlignConsecutiveAssignments: false # 不对齐连续的赋值语句中的等号
+AlignOperands: false # 不对齐多行表达式中的操作数
+AlignTrailingComments: false # 不对齐行尾注释
+AllowShortIfStatementsOnASingleLine: true # 允许短 if 语句写在同一行
+AllowShortLoopsOnASingleLine: true # 允许短循环语句写在同一行
+BreakBeforeBraces: Custom # 大括号换行风格使用自定义规则
+ColumnLimit: 120 # 每行最大列宽限制为 120 个字符
+FixNamespaceComments: false # 不在命名空间结尾的大括号后自动添加注释（如 // namespace xxx）
+IndentWidth: 4 # 缩进宽度为 4 个空格
+InsertNewlineAtEOF: true # 在文件末尾自动插入一个换行符
+MaxEmptyLinesToKeep: 2 # 最多保留 2 个连续空行
+PointerAlignment: Left # 指针符号 * 靠左对齐（紧跟类型，如 int* p）
+TabWidth: 4 # Tab 字符的显示宽度为 4 个空格
+UseTab: Never # 始终使用空格缩进，不使用 Tab 字符
+...

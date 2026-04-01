@@ -1,0 +1,88 @@
+# Copyright (c) 2026 ivfzhou
+# ipasigner is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of the Mulan PSL v2.
+# You may obtain a copy of Mulan PSL v2 at:
+#          http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
+set(LIBZIP_VERSION v1.11.4)
+set(LIBZIP_HEADER_NAME zip.h)
+set(LIBZIP_LIBRARY_NAME libzip.a)
+set(LIBZIP_DIRECTORY ${DEPENDENCIES_DIRECTORY}/libzip)
+set(LIBZIP_INSTALL_DIRECTORY ${LIBZIP_DIRECTORY}/install)
+set(LIBZIP_LIBRARY_DIRECTORY ${LIBZIP_INSTALL_DIRECTORY}/lib)
+set(LIBZIP_HEADERS_DIRECTORY ${LIBZIP_INSTALL_DIRECTORY}/include)
+
+find_library(
+        LIBZIP_LIBRARY
+        NAMES ${LIBZIP_LIBRARY_NAME}
+        PATHS ${LIBZIP_LIBRARY_DIRECTORY}
+        NO_DEFAULT_PATH
+)
+
+find_path(
+        LIBZIP_INCLUDE_DIRECTORY
+        NAMES ${LIBZIP_HEADER_NAME}
+        PATHS ${LIBZIP_HEADERS_DIRECTORY}
+        NO_DEFAULT_PATH
+)
+
+if (LIBZIP_LIBRARY AND LIBZIP_INCLUDE_DIRECTORY)
+    message(STATUS "found libzip library: ${LIBZIP_LIBRARY}")
+    message(STATUS "found libzip include directory: ${LIBZIP_INCLUDE_DIRECTORY}")
+else ()
+    include(ExternalProject)
+    set(LIBZIP_BUILD_DIRECTORY ${LIBZIP_DIRECTORY}/build)
+    set(LIBZIP_SOURCE_DIRECTORY ${LIBZIP_DIRECTORY}/source)
+    set(LIBZIP_COMPILE_FLAGS_RELEASE "${COMPILER_C_FLAGS_RELEASE} -DLZMA_API_STATIC")
+    set(LIBZIP_COMPILE_FLAGS_DEBUG "${COMPILER_C_FLAGS_DEBUG} -DLZMA_API_STATIC")
+    ExternalProject_Add(
+            libzip
+            PREFIX ${LIBZIP_DIRECTORY}
+            URL https://github.com/nih-at/libzip/archive/refs/tags/${LIBZIP_VERSION}.zip
+            SOURCE_DIR ${LIBZIP_SOURCE_DIRECTORY}
+            BINARY_DIR ${LIBZIP_BUILD_DIRECTORY}
+            PATCH_COMMAND ${CMAKE_COMMAND} -DLIBZIP_SOURCE_DIR=${LIBZIP_SOURCE_DIRECTORY} -DZLIB_LIBRARY=${ZLIB_LIBRARY} -P ${CMAKE_SOURCE_DIR}/cmakes/linux/libzip_zlib_patch.cmake
+            CONFIGURE_COMMAND ${CMAKE_COMMAND} --fresh -S ${LIBZIP_SOURCE_DIRECTORY} -B ${LIBZIP_BUILD_DIRECTORY}
+            -DCMAKE_INSTALL_PREFIX=${LIBZIP_INSTALL_DIRECTORY}
+            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+            -DZLIB_LIBRARY=${ZLIB_LIBRARY}
+            -DZLIB_INCLUDE_DIR=${ZLIB_INCLUDE_DIRECTORY}
+            -DBZIP2_LIBRARY_DEBUG=${BZIP2_LIBRARY}
+            -DBZIP2_LIBRARY_RELEASE=${BZIP2_LIBRARY}
+            -DBZIP2_INCLUDE_DIR=${BZIP2_INCLUDE_DIRECTORY}
+            -DLIBLZMA_LIBRARY_RELEASE=${XZ_LIBRARY}
+            -DLIBLZMA_LIBRARY_DEBUG=${XZ_LIBRARY}
+            -DLIBLZMA_INCLUDE_DIR=${XZ_INCLUDE_DIRECTORY}
+            -Dzstd_STATIC_LIBRARY=${ZSTD_LIBRARY}
+            -Dzstd_INCLUDE_DIR=${ZSTD_INCLUDE_DIRECTORY}
+            -DOPENSSL_ROOT_DIR=${OPENSSL_INSTALL_DIRECTORY}
+            -DOPENSSL_CRYPTO_LIBRARY=${CRYPTO_LIBRARY}
+            -DOPENSSL_INCLUDE_DIR=${OPENSSL_INCLUDE_DIRECTORY}
+            -DBUILD_SHARED_LIBS=OFF
+            -DBUILD_REGRESS=OFF
+            BUILD_COMMAND ${CMAKE_COMMAND} --build ${LIBZIP_BUILD_DIRECTORY} --config ${CMAKE_BUILD_TYPE} --parallel --clean-first
+            INSTALL_COMMAND ${CMAKE_COMMAND} --build ${LIBZIP_BUILD_DIRECTORY} --config ${CMAKE_BUILD_TYPE} --target install
+    )
+    set(LIBZIP_LIBRARY ${LIBZIP_LIBRARY_DIRECTORY}/${LIBZIP_LIBRARY_NAME})
+    set(LIBZIP_INCLUDE_DIRECTORY ${LIBZIP_HEADERS_DIRECTORY})
+    list(APPEND DEPENDENCIES ${LIBZIP_NAME})
+    if (TARGET ${ZLIB_NAME})
+        add_dependencies(${LIBZIP_NAME} ${ZLIB_NAME})
+    endif ()
+    if (TARGET ${BZIP2_NAME})
+        add_dependencies(${LIBZIP_NAME} ${BZIP2_NAME})
+    endif ()
+    if (TARGET ${OPENSSL_NAME})
+        add_dependencies(${LIBZIP_NAME} ${OPENSSL_NAME})
+    endif ()
+    if (TARGET ${ZSTD_NAME})
+        add_dependencies(${LIBZIP_NAME} ${ZSTD_NAME})
+    endif ()
+endif ()
+
+include_directories(${LIBZIP_INCLUDE_DIRECTORY})
+list(APPEND LIBRARIES ${LIBZIP_LIBRARY})
