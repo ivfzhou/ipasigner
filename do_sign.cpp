@@ -29,6 +29,7 @@
  */
 
 #include <format>
+#include <set>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -44,6 +45,7 @@
 #include "crypto.hpp"
 #include "do_sign.hpp"
 #include "plist.hpp"
+#include "signing.hpp"
 
 namespace gitee::com::ivfzhou::ipasigner {
 
@@ -938,9 +940,115 @@ static void changeFilesPermission(const std::filesystem::path& dir) {
     }
 }
 
-/// 生成 CodeResources plist 文件（TODO: 待实现）。
+/// 递归收集目录下所有文件（相对路径）。
+static void getFolderFiles(const std::filesystem::path& folder, const std::filesystem::path& baseFolder,
+                           std::set<std::string>& files) {
+    for (auto&& entry : std::filesystem::directory_iterator(folder)) {
+        auto name = entry.path().filename().string();
+        if (name == FILE_NAME_DOT || name == FILE_NAME_DOUBLE_DOT) continue;
+        if (entry.is_directory()) {
+            getFolderFiles(entry.path(), baseFolder, files);
+        } else if (entry.is_regular_file()) {
+            auto rel = std::filesystem::relative(entry.path(), baseFolder).generic_string();
+            files.insert(rel);
+        }
+    }
+}
+
+/// 生成 CodeResources plist 文件。
 static int generateCodeResources(std::string& codeResources, const std::filesystem::path& appDir) {
-    // TODO: 待实现。
+    // 收集所有文件。
+    std::set<std::string> setFiles;
+    getFolderFiles(appDir, appDir, setFiles);
+
+    // 获取可执行文件名。
+    auto plistOpt = ReadFile(appDir / FILE_NAME_PLIST);
+    if (!plistOpt) return EXIT_CODE_READ_FILE_ERROR;
+    auto execNameOpt = GetPListString(*plistOpt, PLIST_KEY_CF_BUNDLE_EXECUTABLE);
+    if (execNameOpt) setFiles.erase(*execNameOpt);
+    setFiles.erase("_CodeSignature/CodeResources");
+
+    // 构建 files 和 files2 字典的 XML 片段。
+    std::string filesXml, files2Xml;
+    for (auto& key : setFiles) {
+        auto filePath = appDir / key;
+        auto [sha1B64, sha256B64] = SHASumBase64File(filePath);
+        if (sha1B64.empty()) continue;
+
+        bool omit1 = false, omit2 = false;
+        if (key == "Info.plist" || key == "PkgInfo") omit2 = true;
+        if (key.ends_with(".DS_Store")) omit2 = true;
+        if (key.ends_with(".lproj/locversion.plist")) {
+            omit1 = true;
+            omit2 = true;
+        }
+
+        if (!omit1) {
+            if (key.find(".lproj/") != std::string::npos) {
+                filesXml += "\t\t<key>" + key +
+                    "</key>\n\t\t<dict>\n"
+                    "\t\t\t<key>hash</key>\n\t\t\t<data>\n\t\t\t" +
+                    sha1B64 + "\n\t\t\t</data>\n\t\t\t<key>optional</key>\n\t\t\t<true/>\n\t\t</dict>\n";
+            } else {
+                filesXml += "\t\t<key>" + key + "</key>\n\t\t<data>\n\t\t" + sha1B64 + "\n\t\t</data>\n";
+            }
+        }
+        if (!omit2) {
+            files2Xml += "\t\t<key>" + key +
+                "</key>\n\t\t<dict>\n"
+                "\t\t\t<key>hash</key>\n\t\t\t<data>\n\t\t\t" +
+                sha1B64 + "\n\t\t\t</data>\n\t\t\t<key>hash2</key>\n\t\t\t<data>\n\t\t\t" + sha256B64 +
+                "\n\t\t\t</data>\n";
+            if (key.find(".lproj/") != std::string::npos) files2Xml += "\t\t\t<key>optional</key>\n\t\t\t<true/>\n";
+            files2Xml += "\t\t</dict>\n";
+        }
+    }
+
+    // 构建 rules 和 rules2。
+    std::string rulesXml =
+        "\t\t<key>^.*</key>\n\t\t<true/>\n"
+        "\t\t<key>^.*\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>optional</key>\n\t\t\t<true/>\n"
+        "\t\t\t<key>weight</key>\n\t\t\t<real>1000</real>\n\t\t</dict>\n"
+        "\t\t<key>^.*\\.lproj/locversion.plist$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n"
+        "\t\t\t<key>weight</key>\n\t\t\t<real>1100</real>\n\t\t</dict>\n"
+        "\t\t<key>^Base\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>1010</real>\n\t\t</dict>\n"
+        "\t\t<key>^version.plist$</key>\n\t\t<true/>\n";
+
+    std::string rules2Xml =
+        "\t\t<key>^.*</key>\n\t\t<true/>\n"
+        "\t\t<key>.*\\.dSYM($|/)</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>11</real>\n\t\t</dict>\n"
+        "\t\t<key>^(.*/)?\\.DS_Store$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n"
+        "\t\t\t<key>weight</key>\n\t\t\t<real>2000</real>\n\t\t</dict>\n"
+        "\t\t<key>^.*\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>optional</key>\n\t\t\t<true/>\n"
+        "\t\t\t<key>weight</key>\n\t\t\t<real>1000</real>\n\t\t</dict>\n"
+        "\t\t<key>^.*\\.lproj/locversion.plist$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n"
+        "\t\t\t<key>weight</key>\n\t\t\t<real>1100</real>\n\t\t</dict>\n"
+        "\t\t<key>^Base\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>1010</real>\n\t\t</dict>\n"
+        "\t\t<key>^Info\\.plist$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n"
+        "\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n"
+        "\t\t<key>^PkgInfo$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n"
+        "\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n"
+        "\t\t<key>^embedded\\.provisionprofile$</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n"
+        "\t\t\t<real>20</real>\n\t\t</dict>\n"
+        "\t\t<key>^version\\.plist$</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n";
+
+    // 组装完整 plist。
+    codeResources = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+                    "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+                    "<plist version=\"1.0\">\n<dict>\n"
+                    "\t<key>files</key>\n\t<dict>\n" +
+        filesXml +
+        "\t</dict>\n"
+        "\t<key>files2</key>\n\t<dict>\n" +
+        files2Xml +
+        "\t</dict>\n"
+        "\t<key>rules</key>\n\t<dict>\n" +
+        rulesXml +
+        "\t</dict>\n"
+        "\t<key>rules2</key>\n\t<dict>\n" +
+        rules2Xml + "\t</dict>\n</dict>\n</plist>\n";
+
     return 0;
 }
 
@@ -969,29 +1077,73 @@ static int signFiles(const SignInfo& signInfo, const SignAsset& signAsset, const
 
     changeFilesPermission(dir);
 
+    // 签名独立 dylib 文件。
     for (auto&& v : signInfo.files) {
-        Logger::info("sign file:", v);
-        // TODO: 签名逻辑。
+        Logger::info("sign dylib file:", v);
+        auto dylibPath = rootAppDir / v;
+        if (!SignMachOFile(dylibPath, signAsset.certificate.second.get(), signAsset.certificate.first.get(), "", "", "",
+                           "", "", "", "")) {
+            Logger::error("failed to sign dylib file:", v);
+            return EXIT_CODE_SIGN_ERROR;
+        }
     }
 
     auto baseDir = rootAppDir;
     if (signInfo.path != FILE_NAME_SLASH) baseDir = baseDir / signInfo.path;
     auto executableFilePath = baseDir / signInfo.execute;
 
-    // TODO: 签名逻辑。
-
+    // Framework 写入描述文件。
     if (signInfo.path.ends_with(FILE_NAME_SUFFIX_FRAMEWORK)) {
         if (!WriteFile(baseDir / FILE_NAME_EMBEDDED_MOBILEPROVISION, signAsset.provision))
             Logger::error("failed to write provision file:", baseDir / FILE_NAME_EMBEDDED_MOBILEPROVISION);
     }
 
+    // 生成 CodeResources。
     MakeDir(baseDir / FILE_NAME_CODE_RESOURCES2,
             std::filesystem::perms::owner_all | std::filesystem::perms::group_exec |
                 std::filesystem::perms::group_read | std::filesystem::perms::others_exec |
                 std::filesystem::perms::others_read);
-    auto codeResourceDir = baseDir / FILE_NAME_CODE_RESOURCES2 / FILE_NAME_CODE_RESOURCES;
+    auto codeResourceFile = baseDir / FILE_NAME_CODE_RESOURCES2 / FILE_NAME_CODE_RESOURCES;
 
-    // TODO: 未完工
+    std::string codeResData;
+    if (auto code = generateCodeResources(codeResData, baseDir)) {
+        Logger::error("failed to generate CodeResources");
+        return code;
+    }
+    if (!WriteFile(codeResourceFile, codeResData)) {
+        Logger::error("failed to write CodeResources:", codeResourceFile.string());
+        return EXIT_CODE_WRITE_FILE_ERROR;
+    }
+
+    // 读取 Info.plist 计算原始二进制哈希（非十六进制字符串）。
+    auto plistDataOpt = ReadFile(baseDir / FILE_NAME_PLIST);
+    std::string infoPlistSHA1, infoPlistSHA256;
+    if (plistDataOpt) {
+        auto [s1, s256] = SHASumRaw(*plistDataOpt);
+        infoPlistSHA1 = std::move(s1);
+        infoPlistSHA256 = std::move(s256);
+    } else {
+        infoPlistSHA1.assign(20, '\0');
+        infoPlistSHA256.assign(32, '\0');
+    }
+
+    // 在根节点签名前注入 dylib。
+    if (signInfo.path == FILE_NAME_SLASH && !signAsset.dylibPath.empty()) {
+        Logger::info("inject dylib:", signAsset.dylibPath, "weak:", signAsset.weakInject);
+        if (!InjectDyLib(executableFilePath, signAsset.dylibPath, signAsset.weakInject)) {
+            Logger::error("failed to inject dylib into:", executableFilePath.string());
+            return EXIT_CODE_SIGN_ERROR;
+        }
+    }
+
+    // 签名主可执行文件。
+    Logger::info("sign executable:", executableFilePath.string());
+    if (!SignMachOFile(executableFilePath, signAsset.certificate.second.get(), signAsset.certificate.first.get(),
+                       signInfo.bundleId, signAsset.teamId, signAsset.certificateName, signAsset.plistEntitlements,
+                       infoPlistSHA1, infoPlistSHA256, codeResData)) {
+        Logger::error("failed to sign executable:", executableFilePath.string());
+        return EXIT_CODE_SIGN_ERROR;
+    }
 
     return 0;
 }
@@ -1080,6 +1232,8 @@ int DoSign(const Options& opts) {
 
         std::string dylibPath{};
         if (auto code = writeDylibFileIfNeed(dylibPath, signAsset.appDir, cfg.dylibFilePath)) return code;
+        signAsset.dylibPath = std::move(dylibPath);
+        signAsset.weakInject = cfg.weakInject;
 
         if (auto code = verifyPList(signAsset.appDir)) return code;
 

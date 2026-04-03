@@ -23,6 +23,7 @@
 #define IPASIGNER_SIGNASSET_HPP
 
 #include <filesystem>
+#include <map>
 #include <string>
 
 #include "SignInfo.hpp"
@@ -70,6 +71,12 @@ class SignAsset final {
 
     /// 签名信息树（根节点为主 .app，子节点为插件和框架）。
     SignInfo signInfo;
+
+    /// 动态库加载路径（如 @executable_path/xxx.dylib），空表示不注入。
+    std::string dylibPath;
+
+    /// 是否弱注入动态库。
+    bool weakInject{};
 };
 
 }

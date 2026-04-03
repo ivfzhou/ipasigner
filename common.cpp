@@ -47,13 +47,13 @@
 namespace gitee::com::ivfzhou::ipasigner {
 
 // 交换 16 位无符号整数的字节序（大端 <-> 小端），即交换高低两个字节的位置。
-std::uint16_t Swap(const std::uint16_t value) { return value >> 8 & 0x00ff | value << 8 & 0xff00; }
+std::uint16_t Swap(const std::uint16_t value) { return (value >> 8 & 0x00ff) | (value << 8 & 0xff00); }
 
 // 交换 32 位无符号整数的字节序（大端 <-> 小端）。
 // 第一步：交换每对相邻字节（奇偶字节互换）；第二步：交换前后两个半字（16 位）。
 std::uint32_t Swap(std::uint32_t value) {
-    value = value >> 8 & 0x00ff00ff | value << 8 & 0xff00ff00;
-    value = value >> 16 & 0x0000ffff | value << 16 & 0xffff0000;
+    value = (value >> 8 & 0x00ff00ff) | (value << 8 & 0xff00ff00);
+    value = (value >> 16 & 0x0000ffff) | (value << 16 & 0xffff0000);
     return value;
 }
 
@@ -68,8 +68,8 @@ std::uint64_t Swap(std::uint64_t value) {
 
 // 交换 32 位无符号整数的字节序（大端 <-> 小端），功能与 Swap(uint32_t) 相同。
 uint32_t SwapInt32(uint32_t value) {
-    value = value >> 8 & 0x00ff00ff | value << 8 & 0xff00ff00;
-    value = value >> 16 & 0x0000ffff | value << 16 & 0xffff0000;
+    value = (value >> 8 & 0x00ff00ff) | (value << 8 & 0xff00ff00);
+    value = (value >> 16 & 0x0000ffff) | (value << 16 & 0xffff0000);
     return value;
 }
 
