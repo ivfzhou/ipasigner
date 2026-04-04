@@ -34,7 +34,24 @@
 
 namespace gitee::com::ivfzhou::ipasigner {
 
-/// 签名单个 Mach-O 文件（支持 Fat Binary）。
+/**
+ * @brief 签名单个 Mach-O 文件（支持 Fat Binary 多架构）。
+ *
+ * 读取文件后根据 Mach-O magic 判断类型（Fat / 32位 / 64位），
+ * 对每个架构构建完整的 CodeSignature SuperBlob 并写入文件。
+ *
+ * @param filePath 待签名的 Mach-O 文件路径（.app 内的可执行文件或 .dylib）。
+ * @param cert 用于签名的 X509 证书指针（调用方负责生命周期管理）。
+ * @param pkey 对应的私钥指针（调用方负责生命周期管理）。
+ * @param bundleId 应用的 Bundle ID 标识符，可为空字符串（如签名 dylib 时）。
+ * @param teamId 团队标识符（Team ID），可为空字符串。
+ * @param subjectCN 签名证书的主体通用名称（用于 Requirements 表达式），可为空字符串。
+ * @param entitlements 权限配置 XML 内容，仅主可执行文件需要非空值。
+ * @param infoPlistSHA1 Info.plist 文件的 SHA1 原始哈希（20 字节二进制数据）。
+ * @param infoPlistSHA256 Info.plist 文件的 SHA256 原始哈希（32 字节二进制数据）。
+ * @param codeResourcesData CodeResources plist 文件的原始内容（用于资源完整性校验）。
+ * @return 成功返回 true，失败返回 false 并输出错误日志。
+ */
 bool SignMachOFile(const std::filesystem::path& filePath, X509* cert, EVP_PKEY* pkey, std::string_view bundleId,
                    std::string_view teamId, std::string_view subjectCN, std::string_view entitlements,
                    std::string_view infoPlistSHA1, std::string_view infoPlistSHA256,

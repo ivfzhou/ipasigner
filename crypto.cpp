@@ -214,7 +214,11 @@ std::optional<std::pair<EvpPkeyPtr, X509Ptr>> ParseCertificate(std::string_view 
     return std::pair(std::move(evpPKey), std::move(x509Cert));
 }
 
-// 计算 SHA256。
+/**
+ * @brief 计算数据的 SHA256 哈希，返回十六进制字符串。
+ * @param data 待计算哈希的数据。
+ * @return 成功返回 64 字符的十六进制哈希字符串（小写），失败返回 std::nullopt。
+ */
 std::optional<std::string> SHA256Hex(const std::string_view data) {
     unsigned char hash[EVP_MAX_MD_SIZE];
     unsigned int hashLength;
@@ -242,7 +246,11 @@ std::optional<std::string> SHA256Hex(const std::string_view data) {
     return result;
 }
 
-// 计算 SHA1。
+/**
+ * @brief 计算数据的 SHA1 哈希，返回十六进制字符串。
+ * @param data 待计算哈希的数据。
+ * @return 成功返回 40 字符的十六进制哈希字符串（小写），失败返回 std::nullopt。
+ */
 std::optional<std::string> SHA1Hex(std::string_view data) {
     unsigned char hash[EVP_MAX_MD_SIZE];
     unsigned int hashLength;
@@ -284,7 +292,14 @@ std::string Base64Encode(const std::string_view data) {
     return {reinterpret_cast<char*>(base64Buf.data())};
 }
 
-// 计算原始二进制 SHA 哈希。hashType: 1=SHA1, 2=SHA256。
+/**
+ * @brief 计算原始二进制 SHA 哈希值（非十六进制编码）。
+ *
+ * @param hashType 哈希算法类型：1 = SHA-1，2 = SHA-256。
+ * @param data 待计算哈希的数据指针。
+ * @param size 数据长度（字节）。
+ * @return 原始二进制哈希值字符串（SHA1 为 20 字节，SHA256 为 32 字节），失败返回空字符串。
+ */
 std::string SHARaw(const int hashType, const void* data, const std::size_t size) {
     unsigned char hash[EVP_MAX_MD_SIZE]{};
     unsigned int hashLen{};
@@ -298,15 +313,37 @@ std::string SHARaw(const int hashType, const void* data, const std::size_t size)
     return {reinterpret_cast<const char*>(hash), hashLen};
 }
 
+/**
+ * @brief 同时计算数据的 SHA1 和 SHA256 原始二进制哈希。
+ * @param data 待计算哈希的数据。
+ * @return (SHA1原始哈希(20字节), SHA256原始哈希(32字节)) 的 pair。
+ */
 std::pair<std::string, std::string> SHASumRaw(const std::string_view data) {
     return {SHARaw(1, data.data(), data.size()), SHARaw(2, data.data(), data.size())};
 }
 
+/**
+ * @brief 同时计算数据的 SHA1 和 SHA256 哈希，返回 Base64 编码结果。
+ *
+ * 内部调用 SHASumRaw() 获取原始哈希，再分别进行 Base64 编码。
+ * 用于 CodeResources 文件中的哈希记录。
+ *
+ * @param data 待计算哈希的数据。
+ * @return (SHA1的Base64编码, SHA256的Base64编码) 的 pair。
+ */
 std::pair<std::string, std::string> SHASumBase64(const std::string_view data) {
     auto [sha1, sha256] = SHASumRaw(data);
     return {Base64Encode(sha1), Base64Encode(sha256)};
 }
 
+/**
+ * @brief 读取文件内容并计算 SHA1 和 SHA256 哈希的 Base64 编码结果。
+ *
+ * 先读取文件全部内容，再调用 SHASumBase64() 进行哈希计算和编码。
+ *
+ * @param filePath 待计算哈希的文件路径。
+ * @return (SHA1的Base64编码, SHA256的Base64编码) 的 pair，文件读取失败时返回空的 pair。
+ */
 std::pair<std::string, std::string> SHASumBase64File(const std::filesystem::path& filePath) {
     auto dataOpt = ReadFile(filePath);
     if (!dataOpt) return {};

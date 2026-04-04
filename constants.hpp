@@ -80,9 +80,9 @@ extern const char* const PLIST_TAG_ROOT; ///< <plist> 根标签。
 extern const char* const PLIST_TAG_DICT; ///< <dict> 字典标签。
 extern const char* const PLIST_TAG_ARRAY; ///< <array> 数组标签。
 extern const char* const PLIST_TAG_STRING; ///< <string> 字符串标签。
-extern const char* const PLIST_TAG_TRUE;
-extern const char* const PLIST_TAG_FALSE;
-extern const char* const PLIST_TAG_INTEGER;
+extern const char* const PLIST_TAG_TRUE;  ///< <true/> 布尔真值标签。
+extern const char* const PLIST_TAG_FALSE; ///< <false/> 布尔假值标签。
+extern const char* const PLIST_TAG_INTEGER; ///< <integer> 整数标签。
 
 // plist/XML 键名常量：对应 Apple 描述文件和 Info.plist 中的标准键。
 extern const char* const PLIST_KEY_ASSOCIATED_DOMAINS; ///< 关联域名能力键。
@@ -130,9 +130,9 @@ extern const char* const FILE_PATH_CODE_RESOURCES2;
 extern const char* const FILE_PATH_LOCVERSION;
 extern const char* const FILE_PATH_LPROJ;
 
-// 证书。
-extern const char* const CERTIFICATE_APPLE_ROOT_CA; // Apple Root CA 证书
-extern const char* const CERTIFICATE_APPLE_DEV_G3_CA; // Apple WWDR CA 证书（G3）
+// 证书：Apple 根 CA 证书和 WWDR CA G3 中间证书（内嵌 PEM 格式，用于 CMS 签名链）。
+extern const char* const CERTIFICATE_APPLE_ROOT_CA;      ///< Apple Root CA（根证书，PEM 格式）。
+extern const char* const CERTIFICATE_APPLE_DEV_G3_CA;     ///< Apple Worldwide Developer Relations CA G3（中间证书，PEM 格式）。
 
 /**
  * @brief 获取平台对应的换行符。

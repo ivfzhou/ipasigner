@@ -692,7 +692,14 @@ static int writeProvisionFile(const std::filesystem::path& appDir, const std::st
     return 0;
 }
 
-/// 删除 .app 目录下的原有代码签名目录（_CodeSignature）。
+/**
+ * @brief 删除 .app 目录下的原有代码签名目录（_CodeSignature）。
+ *
+ * 在重新签名前必须清除旧签名，否则可能导致签名冲突或验证失败。
+ * 同时删除 _CodeSignature/CodeResources 等遗留文件。
+ *
+ * @param appDir .app 目录路径。
+ */
 static void removeCodeSignatureFolder(const std::filesystem::path& appDir) {
     std::filesystem::remove_all(appDir / FILE_NAME_CODE_RESOURCES);
 }
@@ -892,7 +899,15 @@ static int getPluginSignInfos(SignInfo& signInfo, const std::filesystem::path& r
     return 0;
 }
 
-/// 递归收集所有需要记录到 CodeResources 中的已变更文件路径。
+/**
+ * @brief 递归收集所有需要记录到 CodeResources 中的已变更文件路径。
+ *
+ * 遍历 SignInfo 树形结构，收集所有 .dylib 文件路径和子组件的
+ * CodeResources / 可执行文件路径，用于生成 CodeResources 的 changed 部分。
+ *
+ * @param changed [输出] 收集到的变更文件相对路径列表。
+ * @param signInfo 当前节点的签名信息。
+ */
 static void getChangedFiles(std::vector<std::string>& changed, const SignInfo& signInfo) {
     for (auto&& v : signInfo.files) changed.push_back(v);
 
@@ -903,7 +918,14 @@ static void getChangedFiles(std::vector<std::string>& changed, const SignInfo& s
     }
 }
 
-/// 为每个签名节点计算并设置其 changed 列表（包含所有子组件的变更文件）。
+/**
+ * @brief 为每个签名节点计算并设置其 changed 列表（包含所有子组件的变更文件）。
+ *
+ * 自底向上递归处理：先让子节点计算自身的 changed，再合并当前节点的文件和
+ * 子组件的 CodeResources / 可执行文件路径。根节点还会追加 embedded.mobileprovision。
+ *
+ * @param signInfo 当前节点（递归修改其 changed 成员）。
+ */
 static void setSignInfoChanged(SignInfo& signInfo) {
     for (auto&& v : signInfo.folders) setSignInfoChanged(v);
 
@@ -914,7 +936,15 @@ static void setSignInfoChanged(SignInfo& signInfo) {
     if (signInfo.path == FILE_NAME_SLASH) signInfo.changed.emplace_back(FILE_NAME_EMBEDDED_MOBILEPROVISION);
 }
 
-/// 递归设置目录及其所有子文件/子目录的权限为完全访问（777）。
+/**
+ * @brief 递归设置目录及其所有子文件/子目录的权限为完全访问（0777）。
+ *
+ * 在签名前确保所有文件具有可读写执行权限，避免因权限不足导致
+ * 签名写入或文件修改失败。对每个操作单独捕获错误并记录日志，
+ * 不中断整体流程。
+ *
+ * @param dir 要修改权限的根目录路径。
+ */
 static void changeFilesPermission(const std::filesystem::path& dir) {
     constexpr auto perms = std::filesystem::perms::all;
     std::error_code ec{};
@@ -941,7 +971,16 @@ static void changeFilesPermission(const std::filesystem::path& dir) {
     }
 }
 
-/// 递归收集目录下所有文件（相对路径）。
+/**
+ * @brief 递归收集目录下所有文件的相对路径（排除 . 和 ..）。
+ *
+ * 遍历目录中的普通文件和子目录，将每个文件相对于 baseFolder 的路径
+ * 插入 set 中（自动去重和排序）。结果用于生成 CodeResources 文件列表。
+ *
+ * @param folder 当前遍历的目录路径。
+ * @param baseFolder 计算相对路径的基准目录。
+ * @param files [输出] 收集到的相对文件路径集合。
+ */
 static void getFolderFiles(const std::filesystem::path& folder, const std::filesystem::path& baseFolder,
                            std::set<std::string>& files) {
     for (auto&& entry : std::filesystem::directory_iterator(folder)) {
@@ -1152,14 +1191,30 @@ static int signFiles(const SignInfo& signInfo, const SignAsset& signAsset, const
     return 0;
 }
 
-/// 将 IPA 解压目录重新打包为 IPA 文件。
+/**
+ * @brief 将 IPA 解压目录重新打包为 IPA 文件（ZIP 格式）。
+ *
+ * 调用 Zip() 函数将签名完成后的目录压缩为目标 IPA 文件。
+ * 这是整个签名流程的最后一步（清理临时文件之前）。
+ *
+ * @param ipaDir 签名完成的 IPA 解压目录路径。
+ * @param dest 输出的 IPA 文件路径（由配置文件指定）。
+ * @return 0 表示成功，EXIT_CODE_ZIP_ERROR 表示打包失败。
+ */
 static int packageIPA(const std::filesystem::path& ipaDir, const std::filesystem::path& dest) {
     if (!Zip(ipaDir, dest)) return EXIT_CODE_ZIP_ERROR;
 
     return 0;
 }
 
-/// 清理 IPA 解压的临时目录。
+/**
+ * @brief 清理 IPA 解压的临时目录。
+ *
+ * 签名和打包完成后，删除在系统临时目录下创建的 IPA 解压文件夹，
+ * 释放磁盘空间。此操作不可逆。
+ *
+ * @param ipaDir 要删除的临时解压目录路径。
+ */
 static void removeIpaDir(const std::filesystem::path& ipaDir) {
     Logger::info("remove ipa temporary directory:", ipaDir.string());
     std::filesystem::remove_all(ipaDir);

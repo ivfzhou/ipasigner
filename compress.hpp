@@ -25,16 +25,29 @@
 
 namespace gitee::com::ivfzhou::ipasigner {
 
-// 解压 IPA 文件到指定目录。
-// ipaPath: IPA 文件路径。
-// destDir: 解压目标目录路径。
-// 返回值：成功返回 true，失败返回 false。
+/**
+ * @brief 解压 IPA 文件（ZIP 格式）到指定目录。
+ *
+ * 使用 libzip 库进行多线程并行解压，支持 ZIP_BUFFER_SIZE 大小的缓冲区读取。
+ * 解压过程中会自动创建目标目录结构，保留文件权限和符号链接。
+ *
+ * @param ipaPath 源 IPA 文件路径（IPA 本质是 ZIP 格式归档文件）。
+ * @param destDir 解压目标目录路径（若不存在会自动创建）。
+ * @return 成功返回 true，失败返回 false 并输出错误日志。
+ */
 bool Unzip(const std::filesystem::path& ipaPath, const std::filesystem::path& destDir);
 
-// 将 IPA 文件夹打包为 IPA 文件（ZIP 格式）。
-// ipaDir: 待打包的 IPA 文件夹路径（即解压后的根目录，其下应包含 Payload 等目录）。
-// outputPath: 输出的 IPA 文件路径。
-// 返回值：成功返回 true，失败返回 false。
+/**
+ * @brief 将 IPA 文件夹打包为 IPA 文件（ZIP 格式）。
+ *
+ * 递归遍历目录下的所有文件、子目录和符号链接，
+ * 按照标准 IPA/ZIP 格式压缩输出。使用 DEFLATE 算法压缩普通文件，
+ * 符号链接以存储方式写入。Payload 目录作为 IPA 的根内容。
+ *
+ * @param ipaDir 待打包的 IPA 目录路径（即解压后的根目录，其下应包含 Payload 等子目录）。
+ * @param outputPath 输出的 IPA 文件路径（若已存在将被覆盖）。
+ * @return 成功返回 true，失败返回 false 并输出错误日志。
+ */
 bool Zip(const std::filesystem::path& ipaDir, const std::filesystem::path& outputPath);
 
 }

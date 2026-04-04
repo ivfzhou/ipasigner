@@ -10,6 +10,23 @@
  * See the Mulan PSL v2 for more details.
  */
 
+/**
+ * @file signing.cpp
+ * @brief Mach-O 代码签名与动态库注入实现。
+ *
+ * 本文件是 ipasigner 的核心模块，实现了完整的 Apple CodeSignature 协议：
+ * 1. 构建 CodeSignature SuperBlob 的各个 Slot：
+ *    - Requirements Slot（签名需求表达式，含 Bundle ID 与证书 CN）
+ *    - Entitlements Slot（权限配置 XML）
+ *    - DER Entitlements Slot（ASN.1 DER 编码的权限配置）
+ *    - CodeDirectory Slot（代码哈希目录，支持 SHA1/SHA256 双版本）
+ *    - CMS Signature Slot（基于 OpenSSL CMS 的数字签名）
+ * 2. 组装完整的 __LINKEDIT 段 CodeSignature SuperBlob
+ * 3. 解析 Mach-O 文件格式并执行单架构签名（支持自动扩展 __LINKEDIT 空间）
+ * 4. Fat Binary 多架构遍历签名
+ * 5. 向 Mach-O 注入 LC_LOAD_DYLIB / LC_LOAD_WEAK_DYLIB 加载命令
+ */
+
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -39,7 +56,21 @@
 
 namespace gitee::com::ivfzhou::ipasigner {
 
-// 构建 Requirements Slot。
+/**
+ * @brief 构建 Requirements Slot（CSSLOT_REQUIREMENTS）。
+ *
+ * 构建一个 Apple 专有的二进制需求表达式（Requirement Blob），
+ * 指定签名证书的 subject.CN 必须与给定值匹配，且应用的标识符为指定 Bundle ID。
+ * 当 bundleId 或 subjectCN 为空时，返回一个空的 Requirements Blob。
+ *
+ * 内部使用 0xfade0c00/0xfade0c01 magic 和 TLV 编码格式，
+ * 嵌套表达 identifier "bundleId" and anchor apple generic and
+ * (certificate leaf["subject.CN"] = "subjectCN") or certificate 1[field.1.2.840.113635.100.6.1.17]
+ *
+ * @param bundleId 应用的 Bundle ID 标识符。
+ * @param subjectCN 签名证书的主体通用名称（Common Name）。
+ * @return 序列化的 Requirements Slot 二进制数据。
+ */
 static std::string slotBuildRequirements(const std::string_view bundleId, const std::string_view subjectCN) {
     if (bundleId.empty() || subjectCN.empty())
         return std::string("\xfa\xde\x0c\x01\x00\x00\x00\x0c\x00\x00\x00\x00", 12);
@@ -88,7 +119,15 @@ static std::string slotBuildRequirements(const std::string_view bundleId, const 
     return out;
 }
 
-// 构建 Entitlements Slot。
+/**
+ * @brief 构建 Entitlements Slot（CSSLOT_ENTITLEMENTS）。
+ *
+ * 将权限配置 XML 数据包装为 CSMAGIC_EMBEDDED_ENTITLEMENTS Blob 格式，
+ * 即在原始 XML 前加上 4 字节 magic + 4 字节大端长度头。
+ *
+ * @param entitlements 权限配置 XML 字符串，为空时返回空结果。
+ * @return 序列化的 Entitlements Slot 二进制数据。
+ */
 static std::string slotBuildEntitlements(const std::string_view entitlements) {
     if (entitlements.empty()) return {};
     auto magic = Swap(CSMAGIC_EMBEDDED_ENTITLEMENTS);
@@ -100,7 +139,16 @@ static std::string slotBuildEntitlements(const std::string_view entitlements) {
     return out;
 }
 
-// DER 编码长度。
+/**
+ * @brief ASN.1 DER 编码写入长度字段。
+ *
+ * 按照 DER（Distinguished Encoding Rules）规范将长度值编码并追加到 blob 末尾。
+ * - 若 len < 128，使用短形式：直接写一字节
+ * - 否则使用长形式：首字节为 0x80 | byteCount，后续字节为大端序长度值
+ *
+ * @param blob 目标字符串，编码结果将被追加到末尾。
+ * @param len 待编码的长度值。
+ */
 static void derLength(std::string& blob, const std::uint64_t len) {
     if (len < 128) {
         blob.append(1, static_cast<char>(len));
@@ -116,7 +164,19 @@ static void derLength(std::string& blob, const std::uint64_t len) {
     }
 }
 
-// 递归将 pugixml 节点转为 ASN.1 DER 编码。
+/**
+ * @brief 递归将 pugixml plist XML 节点转换为 ASN.1 DER 编码。
+ *
+ * 支持 Apple plist 中的以下数据类型到 ASN.1 类型的映射：
+ * - <true/> / <false/> -> BOOLEAN (tag 0x01)
+ * - <integer>           -> INTEGER (tag 0x02)
+ * - <string>            -> UTF8String (tag 0x0c)
+ * - <array>             -> SEQUENCE (tag 0x30)，递归编码子元素
+ * - <dict>              -> SET (tag 0x31) of SEQUENCE { UTF8String(key), value }，键值对
+ *
+ * @param node pugixml XML 节点（plist 的子节点之一）。
+ * @return 该节点的 DER 编码二进制字符串。
+ */
 static std::string nodeToDer(const pugi::xml_node& node) {
     std::string out{};
 
@@ -187,7 +247,16 @@ static std::string nodeToDer(const pugi::xml_node& node) {
     return out;
 }
 
-// 构建 DER 格式 Entitlements Slot。
+/**
+ * @brief 构建 DER 格式 Entitlements Slot（CSSLOT_DER_ENTITLEMENTS）。
+ *
+ * 将 plist XML 格式的 Entitlements 解析后，递归转换为 ASN.1 DER 编码，
+ * 再包装为 CSMAGIC_EMBEDDED_DER_ENTITLEMENTS Blob 格式。
+ * 这是 iOS/macOS 代码签名中的可选 Slot，用于以二进制形式嵌入权限信息。
+ *
+ * @param entitlements 权限配置 XML 字符串（plist 格式），为空时返回空结果。
+ * @return 序列化的 DER Entitlements Slot 二进制数据，解析失败时返回空。
+ */
 static std::string slotBuildDerEntitlements(const std::string_view entitlements) {
     if (entitlements.empty()) return {};
 
@@ -212,7 +281,32 @@ static std::string slotBuildDerEntitlements(const std::string_view entitlements)
     return out;
 }
 
-// 构建 CodeDirectory Slot。
+/**
+ * @brief 构建 CodeDirectory Slot（CSSLOT_CODEDIRECTORY / CSSLOT_ALTERNATE_CODEDIRECTORIES）。
+ *
+ * 构建完整的 CodeDirectory Blob，这是 Apple 代码签名的核心数据结构。
+ * 按照版本 0x20400 格式组织，包含：
+ * - 头部固定字段（magic, version, codeLimit, hashType, pageSize 等）
+ * - 可执行段限制与标志（execSegLimit, execSegFlags）
+ * - 特殊 Slot 哈希（DER Entitlements、Entitlements、CodeResources、Requirements、Info.plist）
+ * - Bundle ID 和 Team ID 标识符
+ * - 代码页哈希（按 pageSize 分页，每页计算 SHA1 或 SHA256）
+ *
+ * @param bAlternate true 构建 SHA256 版本（Alternate），false 构建 SHA1 主版本。
+ * @param codeBase 代码区起始指针（Mach-O 文件在内存中的基地址）。
+ * @param codeLength 代码区长度（需签名的字节数）。
+ * @param execSegLimit 可执行段的内存上限（__TEXT.vmsize）。
+ * @param execSegFlags 可执行段标志位（如 CS_EXECSEG_MAIN_BINARY）。
+ * @param bundleId 应用的 Bundle ID 标识符。
+ * @param teamId 团队标识符（Team ID）。
+ * @param infoPlistSHA Info.plist 的 SHA 哈希值（主/备版本对应长度）。
+ * @param requirementsSHA Requirements Slot 的 SHA 哈希值。
+ * @param codeResourcesSHA CodeResources 的 SHA 哈希值。
+ * @param entitlementsSHA Entitlements Slot 的 SHA 哈希值。
+ * @param derEntitlementsSHA DER Entitlements Slot 的 SHA 哈希值。
+ * @param isExecuteArch 是否为主可执行文件架构（影响特殊 Slot 排列顺序）。
+ * @return 序列化的 CodeDirectory Slot 二进制数据，参数无效时返回空。
+ */
 static std::string slotBuildCodeDirectory(const bool bAlternate, const std::uint8_t* codeBase,
                                           const std::uint32_t codeLength, const std::uint64_t execSegLimit,
                                           const std::uint64_t execSegFlags, const std::string_view bundleId,
@@ -280,7 +374,22 @@ static std::string slotBuildCodeDirectory(const bool bAlternate, const std::uint
     return out;
 }
 
-// 构建 CMS 签名 Slot。
+/**
+ * @brief 构建 CMS 签名 Slot（CSSLOT_SIGNATURESLOT）。
+ *
+ * 使用 OpenSSL CMS API 生成 PKCS#7 detached 签名，签名内容包括：
+ * - SHA1 CodeDirectory 哈希（作为 CDHashes plist 属性，OID 1.2.840.113635.100.9.1）
+ * - SHA256 CodeDirectory 哈希（作为 ASN.1 SEQUENCE 属性，OID 1.2.840.113635.100.9.2）
+ * - Apple WWDR CA G3 和 Apple Root CA 作为证书链
+ *
+ * 最终结果包装为 CSMAGIC_BLOBWRAPPER 格式。
+ *
+ * @param cert 用于签名的 X509 证书。
+ * @param pkey 对应的私钥。
+ * @param codeDirectorySlot 主 CodeDirectory Slot 数据。
+ * @param alternateCodeDirectorySlot 备用（SHA256）CodeDirectory Slot 数据。
+ * @return 成功返回 CMS 签名的 BlobWrapper 数据，失败返回 std::nullopt。
+ */
 static std::optional<std::string> slotBuildCMSSignature(X509* cert, EVP_PKEY* pkey,
                                                         const std::string_view codeDirectorySlot,
                                                         const std::string_view alternateCodeDirectorySlot) {
@@ -389,7 +498,35 @@ static std::optional<std::string> slotBuildCMSSignature(X509* cert, EVP_PKEY* pk
     return result;
 }
 
-// 组装完整的 CodeSignature SuperBlob。
+/**
+ * @brief 组装完整的 CodeSignature SuperBlob（CSMAGIC_EMBEDDED_SIGNATURE）。
+ *
+ * 按以下顺序构建各 Slot 并组装为 SuperBlob：
+ * 1. Requirements Slot（签名需求表达式）
+ * 2. Entitlements Slot（权限 XML，仅主可执行文件）
+ * 3. DER Entitlements Slot（DER 编码权限，仅主可执行文件）
+ * 4. CodeDirectory Slot（SHA1 版本）
+ * 5. Alternate CodeDirectory Slot（SHA256 版本）
+ * 6. CMS Signature Slot（数字签名）
+ *
+ * 根据 Entitlements 中是否包含 get-task-allow 自动设置 execSegFlags。
+ *
+ * @param cert 用于签名的 X509 证书。
+ * @param pkey 对应的私钥。
+ * @param codeBase 代码区起始指针。
+ * @param codeLength 代码区长度。
+ * @param execSegLimit 可执行段内存上限。
+ * @param isExecute 是否为主可执行文件（决定是否嵌入完整 Entitlements）。
+ * @param bundleId Bundle ID 标识符。
+ * @param teamId 团队标识符。
+ * @param subjectCN 证书主体通用名称（用于 Requirements 表达式）。
+ * @param entitlements 权限配置 XML 字符串。
+ * @param infoPlistSHA1 Info.plist 的 SHA1 哈希。
+ * @param infoPlistSHA256 Info.plist 的 SHA256 哈希。
+ * @param codeResourcesSHA1 CodeResources 的 SHA1 哈希。
+ * @param codeResourcesSHA256 CodeResources 的 SHA256 哈希。
+ * @return 序列化的完整 SuperBlob 二进制数据。
+ */
 static std::string buildCodeSignature(X509* cert, EVP_PKEY* pkey, const std::uint8_t* codeBase,
                                       const std::uint32_t codeLength, const std::uint64_t execSegLimit,
                                       const bool isExecute, const std::string_view bundleId,
@@ -461,8 +598,30 @@ static std::string buildCodeSignature(X509* cert, EVP_PKEY* pkey, const std::uin
     return result;
 }
 
-// 解析单个架构的 Mach-O 并签名。若空间不足自动扩展。
-// data: 整个文件的数据（可能会被扩展），archOffset: 此架构在文件中的偏移。
+/**
+ * @brief 解析单个架构的 Mach-O 文件并执行代码签名。
+ *
+ * 执行流程：
+ * 1. 解析 Mach-O 头部，确定 32/64 位、大小端、文件类型
+ * 2. 遍历 Load Commands，定位 __TEXT（execSegLimit）、__LINKEDIT、LC_CODE_SIGNATURE
+ * 3. 调用 buildCodeSignature() 构建完整的签名数据
+ * 4. 若现有空间不足，自动扩展 __LINKEDIT 段并重建签名
+ * 5. 将签名数据写入 LC_CODE_SIGNATURE.dataoff 指定的偏移处
+ *
+ * @param data 整个文件的二进制数据引用（可能因扩展而被修改）。
+ * @param archOffset 当前架构在 Fat Binary 或单架构文件中的起始偏移。
+ * @param archLength 当前架构的原始长度。
+ * @param cert 签名证书。
+ * @param pkey 签名私钥。
+ * @param bundleId Bundle ID。
+ * @param teamId 团队 ID。
+ * @param subjectCN 证书主体名称。
+ * @param entitlements 权限配置 XML。
+ * @param infoPlistSHA1 Info.plist SHA1 哈希。
+ * @param infoPlistSHA256 Info.plist SHA256 哈希。
+ * @param codeResourcesData CodeResources 文件内容（用于计算哈希）。
+ * @return 成功返回 true，失败返回 false。
+ */
 static bool signSingleArch(std::string& data, const std::uint32_t archOffset, const std::uint32_t archLength,
                            X509* cert, EVP_PKEY* pkey, const std::string_view bundleId, const std::string_view teamId,
                            const std::string_view subjectCN, const std::string_view entitlements,
@@ -578,7 +737,20 @@ static bool signSingleArch(std::string& data, const std::uint32_t archOffset, co
     return true;
 }
 
-// 向单个架构注入 dylib 加载命令。
+/**
+ * @brief 向单个架构的 Mach-O 注入 dylib 加载命令。
+ *
+ * 执行流程：
+ * 1. 检查是否已存在该 dylib 路径的加载命令，若已存在则根据 weakInject 切换类型或跳过
+ * 2. 扫描 __TEXT.__text section 计算 load commands 区域的可用空间
+ * 3. 在 load commands 末尾追加 LC_LOAD_DYLIB 或 LC_LOAD_WEAK_DYLIB 命令
+ * 4. 更新 Mach-O 头部的 ncmds 和 sizeofcmds 字段
+ *
+ * @param base 当前架构在内存中的起始指针。
+ * @param dylibPath 要注入的 dylib 路径（如 @executable_path/xxx.dylib）。
+ * @param weakInject true 使用 LC_LOAD_WEAK_DYLIB（弱引用，找不到不崩溃），false 使用 LC_LOAD_DYLIB。
+ * @return 成功返回 true，空间不足或其他错误返回 false。
+ */
 static bool injectDyLibSingleArch(uint8_t* base, const std::string_view dylibPath, const bool weakInject) {
     auto header = reinterpret_cast<MachHeader*>(base);
     bool is64 = header->magic == MH_MAGIC_64_VAL || header->magic == MH_CIGAM_64_VAL;
@@ -661,7 +833,28 @@ static bool injectDyLibSingleArch(uint8_t* base, const std::string_view dylibPat
     return true;
 }
 
-// 签名 Mach-O 文件。
+/**
+ * @brief 对 Mach-O 文件执行代码签名（支持 Fat Binary 多架构）。
+ *
+ * 读取指定路径的 Mach-O 文件，根据 magic 判断文件类型：
+ * - Fat Binary (0xCAFEBABE / 0xBEBAFECA)：遍历每个架构逐一签名
+ * - 单架构 32 位 (0xFEEDFACE / 0xCEFAEDFE)：直接签名
+ * - 单架构 64 位 (0xFEEDFACF / 0xCFFAEDFE)：直接签名
+ *
+ * 签名完成后写回原文件。
+ *
+ * @param filePath 待签名的 Mach-O 文件路径。
+ * @param cert 签名用的 X509 证书。
+ * @param pkey 签名用的私钥。
+ * @param bundleId 应用的 Bundle ID 标识符。
+ * @param teamId 团队标识符。
+ * @param subjectCN 签名证书的主体通用名称。
+ * @param entitlements 权限配置 XML 内容。
+ * @param infoPlistSHA1 Info.plist 的 SHA1 原始哈希（20 字节）。
+ * @param infoPlistSHA256 Info.plist 的 SHA256 原始哈希（32 字节）。
+ * @param codeResourcesData CodeResources plist 文件的原始内容（用于计算资源哈希）。
+ * @return 成功返回 true，失败返回 false。
+ */
 bool SignMachOFile(const std::filesystem::path& filePath, X509* cert, EVP_PKEY* pkey, const std::string_view bundleId,
                    const std::string_view teamId, const std::string_view subjectCN, const std::string_view entitlements,
                    const std::string_view infoPlistSHA1, const std::string_view infoPlistSHA256,
@@ -710,7 +903,18 @@ bool SignMachOFile(const std::filesystem::path& filePath, X509* cert, EVP_PKEY* 
 }
 
 
-// 向 Mach-O 文件注入动态库加载命令。
+/**
+ * @brief 向 Mach-O 文件注入动态库加载命令（支持 Fat Binary 多架构）。
+ *
+ * 读取指定路径的 Mach-O 文件，根据 magic 判断文件类型后，
+ * 对每个架构调用 injectDyLibSingleArch() 执行实际的加载命令注入。
+ * 注入完成后写回原文件。
+ *
+ * @param filePath 待修改的 Mach-O 文件路径。
+ * @param dylibPath 要注入的 dylib 加载路径（如 @executable_path/xxx.dylib）。
+ * @param weakInject true 使用 LC_LOAD_WEAK_DYLIB（弱引用），false 使用 LC_LOAD_DYLIB（强引用）。
+ * @return 成功返回 true，失败返回 false。
+ */
 bool InjectDyLib(const std::filesystem::path& filePath, const std::string_view dylibPath, const bool weakInject) {
     auto dataOpt = ReadFile(filePath);
     if (!dataOpt) {
