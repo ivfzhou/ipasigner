@@ -10,7 +10,7 @@
 
 cmake_minimum_required(VERSION 3.30)
 
-set(VERSION "1.0.0")
+set(VERSION "1.0.1")
 project(ipasigner LANGUAGES CXX VERSION ${VERSION})
 
 execute_process(
