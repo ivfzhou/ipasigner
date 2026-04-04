@@ -19,7 +19,6 @@
  */
 
 #include <string>
-#include <utility>
 
 #include "constants.hpp"
 #include "version.hpp"

@@ -28,15 +28,16 @@
  * 每个步骤封装为独立的 static 函数，通过返回退出码指示成功或失败。
  */
 
+#include <filesystem>
 #include <format>
 #include <set>
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include "Configuration.hpp"
 #include "Logger.tpp"
-#include "ScopeGuard.hpp"
 #include "SignAsset.hpp"
 #include "SignInfo.hpp"
 #include "arguments.hpp"
@@ -958,15 +959,14 @@ static void getFolderFiles(const std::filesystem::path& folder, const std::files
 /// 生成 CodeResources plist 文件。
 static int generateCodeResources(std::string& codeResources, const std::filesystem::path& appDir) {
     // 收集所有文件。
-    std::set<std::string> setFiles;
+    std::set<std::string> setFiles{};
     getFolderFiles(appDir, appDir, setFiles);
 
     // 获取可执行文件名。
     auto plistOpt = ReadFile(appDir / FILE_NAME_PLIST);
     if (!plistOpt) return EXIT_CODE_READ_FILE_ERROR;
-    auto execNameOpt = GetPListString(*plistOpt, PLIST_KEY_CF_BUNDLE_EXECUTABLE);
-    if (execNameOpt) setFiles.erase(*execNameOpt);
-    setFiles.erase("_CodeSignature/CodeResources");
+    if (auto execNameOpt = GetPListString(*plistOpt, PLIST_KEY_CF_BUNDLE_EXECUTABLE)) setFiles.erase(*execNameOpt);
+    setFiles.erase(FILE_PATH_CODE_RESOURCES2);
 
     // 构建 files 和 files2 字典的 XML 片段。
     std::string filesXml, files2Xml;
@@ -976,78 +976,83 @@ static int generateCodeResources(std::string& codeResources, const std::filesyst
         if (sha1B64.empty()) continue;
 
         bool omit1 = false, omit2 = false;
-        if (key == "Info.plist" || key == "PkgInfo") omit2 = true;
-        if (key.ends_with(".DS_Store")) omit2 = true;
-        if (key.ends_with(".lproj/locversion.plist")) {
+        if (key == FILE_NAME_PLIST || key == FILE_NAME_PKG_INFO) omit2 = true;
+        if (key.ends_with(FILE_NAME_DS_STORE)) omit2 = true;
+        if (key.ends_with(FILE_PATH_LOCVERSION)) {
             omit1 = true;
             omit2 = true;
         }
 
         if (!omit1) {
-            if (key.find(".lproj/") != std::string::npos) {
-                filesXml += "\t\t<key>" + key +
-                    "</key>\n\t\t<dict>\n"
-                    "\t\t\t<key>hash</key>\n\t\t\t<data>\n\t\t\t" +
-                    sha1B64 + "\n\t\t\t</data>\n\t\t\t<key>optional</key>\n\t\t\t<true/>\n\t\t</dict>\n";
+            if (key.find(FILE_PATH_LPROJ) != std::string::npos) {
+                filesXml =
+                    std::format("{}<key>{}</key><dict><key>hash</key><data>{}</data><key>optional</key><true/></dict>",
+                                filesXml, key, sha1B64);
             } else {
-                filesXml += "\t\t<key>" + key + "</key>\n\t\t<data>\n\t\t" + sha1B64 + "\n\t\t</data>\n";
+                filesXml = std::format("{}<key>{}</key><data>{}</data>", filesXml, key, sha1B64);
             }
         }
         if (!omit2) {
-            files2Xml += "\t\t<key>" + key +
-                "</key>\n\t\t<dict>\n"
-                "\t\t\t<key>hash</key>\n\t\t\t<data>\n\t\t\t" +
-                sha1B64 + "\n\t\t\t</data>\n\t\t\t<key>hash2</key>\n\t\t\t<data>\n\t\t\t" + sha256B64 +
-                "\n\t\t\t</data>\n";
-            if (key.find(".lproj/") != std::string::npos) files2Xml += "\t\t\t<key>optional</key>\n\t\t\t<true/>\n";
-            files2Xml += "\t\t</dict>\n";
+            files2Xml =
+                std::format("{}<key>{}</key><dict><key>hash</key><data>{}</data><key>hash2</key><data>{}</data>",
+                            files2Xml, key, sha1B64, sha256B64);
+            if (key.find(FILE_PATH_LPROJ) != std::string::npos)
+                files2Xml = std::format("{}<key>optional</key><true/>", files2Xml);
+            files2Xml += "</dict>";
         }
     }
 
     // 构建 rules 和 rules2。
     std::string rulesXml =
-        "\t\t<key>^.*</key>\n\t\t<true/>\n"
-        "\t\t<key>^.*\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>optional</key>\n\t\t\t<true/>\n"
-        "\t\t\t<key>weight</key>\n\t\t\t<real>1000</real>\n\t\t</dict>\n"
-        "\t\t<key>^.*\\.lproj/locversion.plist$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n"
-        "\t\t\t<key>weight</key>\n\t\t\t<real>1100</real>\n\t\t</dict>\n"
-        "\t\t<key>^Base\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>1010</real>\n\t\t</dict>\n"
-        "\t\t<key>^version.plist$</key>\n\t\t<true/>\n";
+        R"++(<key>^.*</key>
+<true/>
+<key>^.*\.lproj/</key>
+<dict><key>optional</key><true/><key>weight</key><real>1000</real></dict>
+<key>^.*\.lproj/locversion.plist$</key>
+<dict><key>omit</key><true/><key>weight</key><real>1100</real></dict>
+<key>^Base\.lproj/</key>
+<dict><key>weight</key><real>1010</real></dict>
+<key>^version.plist$</key>
+<true/>)++";
 
     std::string rules2Xml =
-        "\t\t<key>^.*</key>\n\t\t<true/>\n"
-        "\t\t<key>.*\\.dSYM($|/)</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>11</real>\n\t\t</dict>\n"
-        "\t\t<key>^(.*/)?\\.DS_Store$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n"
-        "\t\t\t<key>weight</key>\n\t\t\t<real>2000</real>\n\t\t</dict>\n"
-        "\t\t<key>^.*\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>optional</key>\n\t\t\t<true/>\n"
-        "\t\t\t<key>weight</key>\n\t\t\t<real>1000</real>\n\t\t</dict>\n"
-        "\t\t<key>^.*\\.lproj/locversion.plist$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n"
-        "\t\t\t<key>weight</key>\n\t\t\t<real>1100</real>\n\t\t</dict>\n"
-        "\t\t<key>^Base\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>1010</real>\n\t\t</dict>\n"
-        "\t\t<key>^Info\\.plist$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n"
-        "\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n"
-        "\t\t<key>^PkgInfo$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n"
-        "\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n"
-        "\t\t<key>^embedded\\.provisionprofile$</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n"
-        "\t\t\t<real>20</real>\n\t\t</dict>\n"
-        "\t\t<key>^version\\.plist$</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n";
+        R"++(<key>^.*</key>
+<true/>
+<key>.*\.dSYM($|/)</key>
+<dict><key>weight</key><real>11</real></dict>
+<key>^(.*/)?\.DS_Store$</key>
+<dict><key>omit</key><true/><key>weight</key><real>2000</real></dict>
+<key>^.*\.lproj/</key>
+<dict><key>optional</key><true/><key>weight</key><real>1000</real></dict>
+<key>^.*\.lproj/locversion.plist$</key>
+<dict><key>omit</key><true/><key>weight</key><real>1100</real></dict>
+<key>^Base\.lproj/</key>
+<dict><key>weight</key><real>1010</real></dict>
+<key>^Info\.plist$</key>
+<dict><key>omit</key><true/><key>weight</key><real>20</real></dict>
+<key>^PkgInfo$</key>
+<dict><key>omit</key><true/><key>weight</key><real>20</real></dict>
+<key>^embedded\.provisionprofile$</key><dict><key>weight</key>
+<real>20</real></dict>
+<key>^version\.plist$</key>
+<dict><key>weight</key><real>20</real></dict>)++";
 
     // 组装完整 plist。
-    codeResources = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-                    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
-                    "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
-                    "<plist version=\"1.0\">\n<dict>\n"
-                    "\t<key>files</key>\n\t<dict>\n" +
-        filesXml +
-        "\t</dict>\n"
-        "\t<key>files2</key>\n\t<dict>\n" +
-        files2Xml +
-        "\t</dict>\n"
-        "\t<key>rules</key>\n\t<dict>\n" +
-        rulesXml +
-        "\t</dict>\n"
-        "\t<key>rules2</key>\n\t<dict>\n" +
-        rules2Xml + "\t</dict>\n</dict>\n</plist>\n";
+    codeResources = std::format(R"++(<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+<key>files</key>
+<dict>{}</dict>
+<key>files2</key>
+<dict>{}</dict>
+<key>rules</key>
+<dict>{}</dict>
+<key>rules2</key>
+<dict>{}</dict>
+</dict>
+</plist>)++",
+                                filesXml, files2Xml, rulesXml, rules2Xml);
 
     return 0;
 }
@@ -1064,9 +1069,8 @@ static int generateCodeResources(std::string& codeResources, const std::filesyst
  * @return 0 表示成功，非 0 表示失败的退出码。
  */
 static int signFiles(const SignInfo& signInfo, const SignAsset& signAsset, const std::filesystem::path& rootAppDir) {
-    for (auto&& v : signInfo.folders) {
+    for (auto&& v : signInfo.folders)
         if (auto code = signFiles(v, signAsset, rootAppDir)) return code;
-    }
 
     auto dir = signInfo.path;
     if (dir == FILE_NAME_SLASH) {
@@ -1105,7 +1109,7 @@ static int signFiles(const SignInfo& signInfo, const SignAsset& signAsset, const
                 std::filesystem::perms::others_read);
     auto codeResourceFile = baseDir / FILE_NAME_CODE_RESOURCES2 / FILE_NAME_CODE_RESOURCES;
 
-    std::string codeResData;
+    std::string codeResData{};
     if (auto code = generateCodeResources(codeResData, baseDir)) {
         Logger::error("failed to generate CodeResources");
         return code;

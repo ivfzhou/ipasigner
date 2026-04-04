@@ -28,7 +28,6 @@
 #ifndef IPASIGNER_COMMON_HPP
 #define IPASIGNER_COMMON_HPP
 
-#include <concepts>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>

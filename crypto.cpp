@@ -284,4 +284,33 @@ std::string Base64Encode(const std::string_view data) {
     return {reinterpret_cast<char*>(base64Buf.data())};
 }
 
+// 计算原始二进制 SHA 哈希。hashType: 1=SHA1, 2=SHA256。
+std::string SHARaw(const int hashType, const void* data, const std::size_t size) {
+    unsigned char hash[EVP_MAX_MD_SIZE]{};
+    unsigned int hashLen{};
+    auto ctx = EVP_MD_CTX_new();
+    if (!ctx) return {};
+    ScopeGuard guard{[&ctx] { EVP_MD_CTX_free(ctx); }};
+    const EVP_MD* md = (hashType == 2) ? EVP_sha256() : EVP_sha1();
+    EVP_DigestInit_ex(ctx, md, nullptr);
+    EVP_DigestUpdate(ctx, data, size);
+    EVP_DigestFinal_ex(ctx, hash, &hashLen);
+    return {reinterpret_cast<const char*>(hash), hashLen};
+}
+
+std::pair<std::string, std::string> SHASumRaw(const std::string_view data) {
+    return {SHARaw(1, data.data(), data.size()), SHARaw(2, data.data(), data.size())};
+}
+
+std::pair<std::string, std::string> SHASumBase64(const std::string_view data) {
+    auto [sha1, sha256] = SHASumRaw(data);
+    return {Base64Encode(sha1), Base64Encode(sha256)};
+}
+
+std::pair<std::string, std::string> SHASumBase64File(const std::filesystem::path& filePath) {
+    auto dataOpt = ReadFile(filePath);
+    if (!dataOpt) return {};
+    return SHASumBase64(*dataOpt);
+}
+
 }

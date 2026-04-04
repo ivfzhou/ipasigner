@@ -234,7 +234,7 @@ bool Zip(const std::filesystem::path& ipaDir, const std::filesystem::path& outpu
 
         if (entry.is_directory(ec)) {
             // 目录条目：名称以 / 结尾。
-            auto dirName = entryName + "/";
+            auto dirName = entryName + FILE_NAME_SLASH;
             if (zip_dir_add(archive, dirName.c_str(), ZIP_FL_ENC_UTF_8) < 0) {
                 Logger::error("failed to add directory to zip:", dirName, zip_strerror(archive));
                 zip_discard(archive);

@@ -24,6 +24,7 @@
 #define IPASIGNER_LOGGER_TPP
 
 #include <chrono>
+#include <cstddef>
 #include <format>
 #include <iostream>
 #include <ostream>

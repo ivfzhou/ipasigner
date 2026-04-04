@@ -80,6 +80,9 @@ extern const char* const PLIST_TAG_ROOT; ///< <plist> 根标签。
 extern const char* const PLIST_TAG_DICT; ///< <dict> 字典标签。
 extern const char* const PLIST_TAG_ARRAY; ///< <array> 数组标签。
 extern const char* const PLIST_TAG_STRING; ///< <string> 字符串标签。
+extern const char* const PLIST_TAG_TRUE;
+extern const char* const PLIST_TAG_FALSE;
+extern const char* const PLIST_TAG_INTEGER;
 
 // plist/XML 键名常量：对应 Apple 描述文件和 Info.plist 中的标准键。
 extern const char* const PLIST_KEY_ASSOCIATED_DOMAINS; ///< 关联域名能力键。
@@ -118,9 +121,18 @@ extern const char* const FILE_NAME_SUFFIX_APPEX; ///< .appex 后缀。
 extern const char* const FILE_NAME_SUFFIX_FRAMEWORK; ///< .framework 后缀。
 extern const char* const FILE_NAME_SUFFIX_XCTEST; ///< .xctest 后缀。
 extern const char* const FILE_NAME_SUFFIX_DYLIB; ///< .dylib 后缀。
+extern const char* const FILE_NAME_PKG_INFO;
+extern const char* const FILE_NAME_DS_STORE;
 extern const char* const FILE_PATH_IPA_ZH_LOCALE; ///< 中文本地化文件路径（旧版）。
 extern const char* const FILE_PATH_NEW_IPA_ZH_LOCALE; ///< 中文本地化文件路径（新版）。
 extern const char* const FILE_PATH_CODE_RESOURCES; ///< CodeResources 相对路径。
+extern const char* const FILE_PATH_CODE_RESOURCES2;
+extern const char* const FILE_PATH_LOCVERSION;
+extern const char* const FILE_PATH_LPROJ;
+
+// 证书。
+extern const char* const CERTIFICATE_APPLE_ROOT_CA; // Apple Root CA 证书
+extern const char* const CERTIFICATE_APPLE_DEV_G3_CA; // Apple WWDR CA 证书（G3）
 
 /**
  * @brief 获取平台对应的换行符。

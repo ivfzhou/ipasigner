@@ -20,12 +20,11 @@
 
 #include <exception>
 #include <filesystem>
-#include <map>
 #include <optional>
 #include <ostream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include <yaml-cpp/yaml.h>
 

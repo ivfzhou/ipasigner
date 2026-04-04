@@ -34,9 +34,9 @@
 #include <utility>
 #include <vector>
 
-#include "openssl/evp.h"
-#include "openssl/types.h"
-#include "openssl/x509.h"
+#include <openssl/evp.h>
+#include <openssl/types.h>
+#include <openssl/x509.h>
 
 namespace gitee::com::ivfzhou::ipasigner {
 
@@ -110,6 +110,18 @@ std::optional<std::string> SHA1Hex(std::string_view data);
  * @return Base64 编码后的字符串。
  */
 std::string Base64Encode(std::string_view data);
+
+/// 计算原始二进制 SHA 哈希（非十六进制字符串）。
+std::string SHARaw(int hashType, const void* data, std::size_t size);
+
+/// 计算数据的 SHA1 和 SHA256 原始二进制哈希。
+std::pair<std::string, std::string> SHASumRaw(std::string_view data);
+
+/// 计算文件的 SHA1 和 SHA256 并做 Base64 编码。
+std::pair<std::string, std::string> SHASumBase64File(const std::filesystem::path& filePath);
+
+/// 计算数据的 SHA1 和 SHA256 并做 Base64 编码。
+std::pair<std::string, std::string> SHASumBase64(std::string_view data);
 
 }
 

@@ -217,20 +217,20 @@ struct DylibCommand {
 };
 
 // CodeSignature SuperBlob 头。
-struct CS_SuperBlob {
+struct CSSuperBlob {
     std::uint32_t magic;
     std::uint32_t length;
     std::uint32_t count;
 };
 
 // CodeSignature blob 索引。
-struct CS_BlobIndex {
+struct CSBlobIndex {
     std::uint32_t type;
     std::uint32_t offset;
 };
 
 // CodeDirectory 结构体。
-struct CS_CodeDirectory {
+struct CSCodeDirectory {
     std::uint32_t magic;
     std::uint32_t length;
     std::uint32_t version;
