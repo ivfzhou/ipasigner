@@ -71,7 +71,7 @@ static std::string slotBuildRequirements(const std::string_view bundleId, const 
     auto bBundleIdLen = Swap(bundleIdLen);
     auto bSubjectCNLen = Swap(subjectCNLen);
 
-    std::string out;
+    std::string out{};
     out.reserve(len1);
     out.append(reinterpret_cast<const char*>(magic1), sizeof(magic1));
     out.append(reinterpret_cast<const char*>(&bLen1), 4);
@@ -93,7 +93,7 @@ static std::string slotBuildEntitlements(const std::string_view entitlements) {
     if (entitlements.empty()) return {};
     auto magic = Swap(CSMAGIC_EMBEDDED_ENTITLEMENTS);
     auto length = Swap(static_cast<std::uint32_t>(entitlements.size() + 8));
-    std::string out;
+    std::string out{};
     out.append(reinterpret_cast<const char*>(&magic), 4);
     out.append(reinterpret_cast<const char*>(&length), 4);
     out.append(entitlements);
@@ -118,7 +118,7 @@ static void derLength(std::string& blob, const std::uint64_t len) {
 
 // 递归将 pugixml 节点转为 ASN.1 DER 编码。
 static std::string nodeToDer(const pugi::xml_node& node) {
-    std::string out;
+    std::string out{};
 
     if (auto name = std::string_view(node.name()); name == PLIST_TAG_TRUE || name == PLIST_TAG_FALSE) {
         out.append(1, '\x01'); // BOOLEAN tag。
@@ -126,8 +126,8 @@ static std::string nodeToDer(const pugi::xml_node& node) {
         out.append(1, name == PLIST_TAG_TRUE ? '\x01' : '\x00');
     } else if (name == PLIST_TAG_INTEGER) {
         auto text = std::string_view(node.child_value());
-        std::uint64_t val = 0;
-        for (auto c : text) {
+        std::uint64_t val{};
+        for (auto&& c : text) {
             if (c >= '0' && c <= '9') val = val * 10 + (c - '0');
         }
         out.append(1, '\x02'); // INTEGER tag。
@@ -154,14 +154,14 @@ static std::string nodeToDer(const pugi::xml_node& node) {
         derLength(out, text.size());
         out += text;
     } else if (name == PLIST_TAG_ARRAY) {
-        std::string arrContent;
+        std::string arrContent{};
         for (auto child = node.first_child(); child; child = child.next_sibling()) arrContent += nodeToDer(child);
         out.append(1, '\x30'); // SEQUENCE tag。
         derLength(out, arrContent.size());
         out += arrContent;
     } else if (name == PLIST_TAG_DICT) {
-        std::string dictContent;
-        for (auto it = node.begin(); it != node.end(); ++it) {
+        std::string dictContent{};
+        for (auto&& it = node.begin(); it != node.end(); ++it) {
             if (std::string_view(it->name()) != PLIST_TAG_KEY) continue;
             auto keyText = std::string(it->child_value());
             auto valNode = it->next_sibling();
@@ -170,7 +170,7 @@ static std::string nodeToDer(const pugi::xml_node& node) {
             auto valDer = nodeToDer(valNode);
 
             // 每个键值对是一个 SEQUENCE { UTF8String(key), value }。
-            std::string kvContent;
+            std::string kvContent{};
             kvContent.append(1, '\x0c'); // UTF8String tag for key。
             derLength(kvContent, keyText.size());
             kvContent += keyText;
@@ -192,7 +192,7 @@ static std::string slotBuildDerEntitlements(const std::string_view entitlements)
     if (entitlements.empty()) return {};
 
     // 解析 plist XML。
-    pugi::xml_document doc;
+    pugi::xml_document doc{};
     if (!doc.load_string(entitlements.data())) return {};
 
     // 找到 <plist><dict> 根节点。
@@ -205,7 +205,7 @@ static std::string slotBuildDerEntitlements(const std::string_view entitlements)
 
     auto magic = Swap(CSMAGIC_EMBEDDED_DER_ENTITLEMENTS);
     auto length = Swap(static_cast<std::uint32_t>(rawDer.size() + 8));
-    std::string out;
+    std::string out{};
     out.append(reinterpret_cast<const char*>(&magic), 4);
     out.append(reinterpret_cast<const char*>(&length), 4);
     out.append(rawDer);
@@ -236,7 +236,7 @@ static std::string slotBuildCodeDirectory(const bool bAlternate, const std::uint
     cd.execSegFlags = Swap(execSegFlags);
 
     std::string emptySHA(cd.hashSize, '\0');
-    std::vector<std::string> specialSlots;
+    std::vector<std::string> specialSlots{};
     if (isExecuteArch) {
         specialSlots.push_back(derEntitlementsSHA.empty() ? emptySHA : std::string(derEntitlementsSHA));
         specialSlots.push_back(emptySHA);
@@ -267,14 +267,14 @@ static std::string slotBuildCodeDirectory(const bool bAlternate, const std::uint
     cd.teamOffset = Swap(headerLen + bundleIdLen);
     cd.hashOffset = Swap(headerLen + bundleIdLen + teamIdLen + specialSlotsLen);
 
-    std::string out;
+    std::string out{};
     out.reserve(slotLen);
     out.append(reinterpret_cast<const char*>(&cd), headerLen);
     out.append(bundleId.data(), bundleId.size());
     out.append(1, '\0');
     out.append(teamId.data(), teamId.size());
     out.append(1, '\0');
-    for (auto& s : specialSlots) out.append(s);
+    for (auto&& s : specialSlots) out.append(s);
     for (std::uint32_t i{}; i < pages; ++i) out.append(SHARaw(cd.hashType, codeBase + pageSize * i, pageSize));
     if (remain > 0) out.append(SHARaw(cd.hashType, codeBase + pageSize * pages, remain));
     return out;
@@ -338,7 +338,7 @@ static std::optional<std::string> slotBuildCMSSignature(X509* cert, EVP_PKEY* pk
     CMS_signed_add1_attr_by_OBJ(si, obj1, 0x04, cdHashesPlist.c_str(), static_cast<int>(cdHashesPlist.size()));
 
     // 添加 CDHashes SHA256 属性 (OID 1.2.840.113635.100.9.2)。
-    std::string sha256Hex;
+    std::string sha256Hex{};
     for (auto c : altCdSHA256) {
         char buf[4];
         std::snprintf(buf, sizeof(buf), "%02X", static_cast<unsigned char>(c));
@@ -382,7 +382,7 @@ static std::optional<std::string> slotBuildCMSSignature(X509* cert, EVP_PKEY* pk
     // 包装为 BLOBWRAPPER。
     auto blobMagic = Swap(CSMAGIC_BLOBWRAPPER);
     auto blobLen = Swap(static_cast<std::uint32_t>(cmsData.size() + 8));
-    std::string result;
+    std::string result{};
     result.append(reinterpret_cast<const char*>(&blobMagic), 4);
     result.append(reinterpret_cast<const char*>(&blobLen), 4);
     result.append(cmsData);
@@ -412,7 +412,7 @@ static std::string buildCodeSignature(X509* cert, EVP_PKEY* pkey, const std::uin
     auto [derEntSHA1, derEntSHA256] =
         derEntSlot.empty() ? std::pair(std::string(20, '\0'), std::string(32, '\0')) : SHASumRaw(derEntSlot);
 
-    std::uint64_t execSegFlags = 0;
+    std::uint64_t execSegFlags{};
     if (!entSlot.empty() && entSlot.size() > 8) {
         if (std::string_view entData(entSlot.data() + 8, entSlot.size() - 8);
             entData.find("<key>get-task-allow</key>") != std::string_view::npos)
@@ -428,7 +428,7 @@ static std::string buildCodeSignature(X509* cert, EVP_PKEY* pkey, const std::uin
     std::string cmsSlot = cmsSlotOpt ? *cmsSlotOpt : std::string{};
 
     // 计算 blob 数量和长度。
-    std::vector<std::pair<std::uint32_t, std::string*>> blobs;
+    std::vector<std::pair<std::uint32_t, std::string*>> blobs{};
     if (!cdSlot.empty()) blobs.push_back({CSSLOT_CODEDIRECTORY, &cdSlot});
     if (!reqSlot.empty()) blobs.push_back({CSSLOT_REQUIREMENTS, &reqSlot});
     if (!entSlot.empty()) blobs.push_back({CSSLOT_ENTITLEMENTS, &entSlot});
@@ -445,19 +445,19 @@ static std::string buildCodeSignature(X509* cert, EVP_PKEY* pkey, const std::uin
     sb.length = Swap(totalLen);
     sb.count = Swap(static_cast<std::uint32_t>(blobs.size()));
 
-    std::string result;
+    std::string result{};
     result.reserve(totalLen);
     result.append(reinterpret_cast<const char*>(&sb), sizeof(sb));
 
     std::uint32_t offset = headerLen;
-    for (auto& [type, slot] : blobs) {
+    for (auto&& [type, slot] : blobs) {
         CSBlobIndex bi{};
         bi.type = Swap(type);
         bi.offset = Swap(offset);
         result.append(reinterpret_cast<const char*>(&bi), sizeof(bi));
         offset += static_cast<std::uint32_t>(slot->size());
     }
-    for (auto& s : blobs | std::views::values) result.append(*s);
+    for (auto&& s : blobs | std::views::values) result.append(*s);
     return result;
 }
 
@@ -479,11 +479,11 @@ static bool signSingleArch(std::string& data, const std::uint32_t archOffset, co
 
     std::uint32_t codeLength = length % 16 == 0 ? length : length + 16 - length % 16;
     std::uint8_t* signBase{};
-    std::uint64_t execSegLimit = 0;
+    std::uint64_t execSegLimit{};
     std::uint8_t* linkEditSeg{};
 
     auto pLC = base + headerSize;
-    for (std::uint32_t i = 0; i < BO(header->ncmds); ++i) {
+    for (std::uint32_t i{}; i < BO(header->ncmds); ++i) {
         auto lc = reinterpret_cast<LoadCommand*>(pLC);
         if (auto cmd = BO(lc->cmd); cmd == LC_SEGMENT_VAL) {
             auto seg = reinterpret_cast<SegmentCommand*>(pLC);
@@ -589,7 +589,7 @@ static bool injectDyLibSingleArch(uint8_t* base, const std::string_view dylibPat
     // 检查是否已存在该 dylib。
     auto pLC = base + headerSize;
     std::uint32_t freeSpace = 0;
-    for (std::uint32_t i = 0; i < BO(header->ncmds); ++i) {
+    for (std::uint32_t i{}; i < BO(header->ncmds); ++i) {
         auto lc = reinterpret_cast<LoadCommand*>(pLC);
         auto cmd = BO(lc->cmd);
         if (cmd == LC_LOAD_DYLIB_VAL || cmd == LC_LOAD_WEAK_DYLIB_VAL) {
@@ -677,11 +677,11 @@ bool SignMachOFile(const std::filesystem::path& filePath, X509* cert, EVP_PKEY* 
     auto fileSize = static_cast<std::uint32_t>(data.size());
     auto magic = *reinterpret_cast<std::uint32_t*>(base);
 
-    bool ok = false;
+    bool ok{};
     if (magic == FAT_MAGIC_VAL || magic == FAT_CIGAM_VAL) {
         auto fatHeader = reinterpret_cast<FatHeader*>(base);
         auto nArch = magic == FAT_MAGIC_VAL ? fatHeader->nfat_arch : Swap(fatHeader->nfat_arch);
-        for (std::uint32_t i = 0; i < nArch; ++i) {
+        for (std::uint32_t i{}; i < nArch; ++i) {
             auto arch = reinterpret_cast<FatArch*>(base + sizeof(FatHeader) + sizeof(FatArch) * i);
             auto archOffset = magic == FAT_MAGIC_VAL ? arch->offset : Swap(arch->offset);
             if (auto archSize = magic == FAT_MAGIC_VAL ? arch->size : Swap(arch->size);
@@ -725,7 +725,7 @@ bool InjectDyLib(const std::filesystem::path& filePath, const std::string_view d
     if (magic == FAT_MAGIC_VAL || magic == FAT_CIGAM_VAL) {
         auto fatHeader = reinterpret_cast<FatHeader*>(base);
         auto nArch = magic == FAT_MAGIC_VAL ? fatHeader->nfat_arch : Swap(fatHeader->nfat_arch);
-        for (std::uint32_t i = 0; i < nArch; ++i) {
+        for (std::uint32_t i{}; i < nArch; ++i) {
             auto arch = reinterpret_cast<FatArch*>(base + sizeof(FatHeader) + sizeof(FatArch) * i);
             if (auto archOffset = magic == FAT_MAGIC_VAL ? arch->offset : Swap(arch->offset);
                 !injectDyLibSingleArch(base + archOffset, dylibPath, weakInject))

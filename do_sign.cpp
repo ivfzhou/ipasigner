@@ -970,12 +970,12 @@ static int generateCodeResources(std::string& codeResources, const std::filesyst
 
     // 构建 files 和 files2 字典的 XML 片段。
     std::string filesXml, files2Xml;
-    for (auto& key : setFiles) {
+    for (auto&& key : setFiles) {
         auto filePath = appDir / key;
         auto [sha1B64, sha256B64] = SHASumBase64File(filePath);
         if (sha1B64.empty()) continue;
 
-        bool omit1 = false, omit2 = false;
+        bool omit1{}, omit2{};
         if (key == FILE_NAME_PLIST || key == FILE_NAME_PKG_INFO) omit2 = true;
         if (key.ends_with(FILE_NAME_DS_STORE)) omit2 = true;
         if (key.ends_with(FILE_PATH_LOCVERSION)) {

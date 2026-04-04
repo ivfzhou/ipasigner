@@ -30,6 +30,8 @@
 #include <filesystem>
 #include <string_view>
 
+#include <openssl/types.h>
+
 namespace gitee::com::ivfzhou::ipasigner {
 
 /// 签名单个 Mach-O 文件（支持 Fat Binary）。
