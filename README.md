@@ -2,8 +2,6 @@
 
 iOS 平台 IPA 应用包重签名工具。使用 C++20 编写，支持通过 YAML 配置文件完成证书替换、描述文件替换、Bundle ID 修改、动态库注入、plist 编辑等完整的 IPA 重签名流程。
 
-开源协议：[Mulan PSL v2](http://license.coscl.org.cn/MulanPSL2)
-
 ## 功能特性
 
 - **IPA 重签名**：使用自签名证书或企业证书对 .ipa 文件进行完整重新签名
