@@ -371,7 +371,7 @@ static int updateBundleIdIfNeed(const std::string& bundleId, const std::filesyst
     Logger::info("modify bundle id:", bundleId);
 
     // 获取 plist。
-    auto plistOpt = ReadFile(appDir / FILE_NAME_PLIST);
+    auto plistOpt = ReadPListAsXML(appDir / FILE_NAME_PLIST);
     if (!plistOpt) {
         Logger::error("failed to read plist file:", appDir / FILE_NAME_PLIST);
         return EXIT_CODE_READ_FILE_ERROR;
@@ -403,7 +403,7 @@ static int updateBundleIdIfNeed(const std::string& bundleId, const std::filesyst
     for (auto&& pluginAppDir : *pluginAppDirsOpt) {
         Logger::info("found plugin directory:", pluginAppDir.string());
 
-        auto pluginAppPlistOpt = ReadFile(pluginAppDir / FILE_NAME_PLIST);
+        auto pluginAppPlistOpt = ReadPListAsXML(pluginAppDir / FILE_NAME_PLIST);
         if (!pluginAppPlistOpt) {
             Logger::warn("no plist file found:", pluginAppDir);
             continue;
@@ -498,7 +498,7 @@ static int updateBundleNameIfNeed(const std::string& bundleName, const std::file
     if (bundleName.empty()) return 0;
 
     // 读取 plist。
-    auto plistOpt = ReadFile(appDir / FILE_NAME_PLIST);
+    auto plistOpt = ReadPListAsXML(appDir / FILE_NAME_PLIST);
     if (!plistOpt) {
         Logger::error("failed to read plist/xml file:", appDir / FILE_NAME_PLIST);
         return EXIT_CODE_READ_FILE_ERROR;
@@ -534,7 +534,7 @@ static int updateBundleVersionIfNeed(const std::string& bundleVersion, const std
     if (bundleVersion.empty()) return 0;
 
     // 读取 plist。
-    auto plistOpt = ReadFile(appDir / FILE_NAME_PLIST);
+    auto plistOpt = ReadPListAsXML(appDir / FILE_NAME_PLIST);
     if (!plistOpt) {
         Logger::error("failed to read plist/xml file:", appDir / FILE_NAME_PLIST);
         return EXIT_CODE_READ_FILE_ERROR;
@@ -570,7 +570,7 @@ static int updateBundleVersionIfNeed(const std::string& bundleVersion, const std
 static int updatePList(const std::filesystem::path& appDir, const std::map<std::string, std::string>& addPlistStringKey,
                        const std::vector<std::string>& removePlistStringKey) {
     // 读取 plist。
-    auto plistOpt = ReadFile(appDir / FILE_NAME_PLIST);
+    auto plistOpt = ReadPListAsXML(appDir / FILE_NAME_PLIST);
     if (!plistOpt) {
         Logger::error("failed to read plist/xml file:", (appDir / FILE_NAME_PLIST).string());
         return EXIT_CODE_READ_FILE_ERROR;
@@ -609,7 +609,7 @@ static int updateZhLocaleFile(const std::string& bundleName, const std::filesyst
     if (bundleName.empty()) return 0;
 
     // 读取文件。
-    auto plistOpt = ReadFile(appDir / FILE_PATH_IPA_ZH_LOCALE);
+    auto plistOpt = ReadPListAsXML(appDir / FILE_PATH_IPA_ZH_LOCALE);
     if (!plistOpt) {
         Logger::warn("no", FILE_PATH_IPA_ZH_LOCALE, "found");
         return 0;
@@ -645,7 +645,7 @@ static int updateNewZhLocaleFile(const std::string& bundleName, const std::files
     if (bundleName.empty()) return 0;
 
     // 读取文件。
-    auto plistOpt = ReadFile(appDir / FILE_PATH_NEW_IPA_ZH_LOCALE);
+    auto plistOpt = ReadPListAsXML(appDir / FILE_PATH_NEW_IPA_ZH_LOCALE);
     if (!plistOpt) {
         Logger::warn("no", FILE_PATH_NEW_IPA_ZH_LOCALE, "found");
         return 0;
@@ -786,7 +786,7 @@ static int writeDylibFileIfNeed(std::string& dylibPath, const std::filesystem::p
  */
 static int verifyPList(const std::filesystem::path& appDir) {
     // 读取 plist 文件。
-    auto plistOpt = ReadFile(appDir / FILE_NAME_PLIST);
+    auto plistOpt = ReadPListAsXML(appDir / FILE_NAME_PLIST);
     if (!plistOpt) {
         Logger::error("failed to read plist file:", (appDir / FILE_NAME_PLIST).string());
         return EXIT_CODE_READ_FILE_ERROR;
@@ -824,7 +824,7 @@ static int verifyPList(const std::filesystem::path& appDir) {
  */
 static int getSignInfo(SignInfo& signInfo, const std::filesystem::path& appDir) {
     // 读取 plist 文件。
-    auto plistOpt = ReadFile(appDir / FILE_NAME_PLIST);
+    auto plistOpt = ReadPListAsXML(appDir / FILE_NAME_PLIST);
     if (!plistOpt) {
         Logger::error("failed to read plist file:", (appDir / FILE_NAME_PLIST).string());
         return EXIT_CODE_READ_FILE_ERROR;
@@ -1002,7 +1002,7 @@ static int generateCodeResources(std::string& codeResources, const std::filesyst
     getFolderFiles(appDir, appDir, setFiles);
 
     // 获取可执行文件名。
-    auto plistOpt = ReadFile(appDir / FILE_NAME_PLIST);
+    auto plistOpt = ReadPListAsXML(appDir / FILE_NAME_PLIST);
     if (!plistOpt) return EXIT_CODE_READ_FILE_ERROR;
     if (auto execNameOpt = GetPListString(*plistOpt, PLIST_KEY_CF_BUNDLE_EXECUTABLE)) setFiles.erase(*execNameOpt);
     setFiles.erase(FILE_PATH_CODE_RESOURCES2);

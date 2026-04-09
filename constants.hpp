@@ -130,8 +130,9 @@ extern const char* const FILE_PATH_CODE_RESOURCES2;
 extern const char* const FILE_PATH_LOCVERSION;
 extern const char* const FILE_PATH_LPROJ;
 
-// 证书：Apple 根 CA 证书和 WWDR CA G3 中间证书（内嵌 PEM 格式，用于 CMS 签名链）。
-extern const char* const CERTIFICATE_APPLE_ROOT_CA;      ///< Apple Root CA（根证书，PEM 格式）。
+// 证书：Apple 根 CA 证书和 WWDR CA 中间证书（内嵌 PEM 格式，用于 CMS 签名链）。
+extern const char* const CERTIFICATE_APPLE_ROOT_CA;       ///< Apple Root CA（根证书，PEM 格式）。
+extern const char* const CERTIFICATE_APPLE_DEV_CA;        ///< Apple Worldwide Developer Relations CA（G1 中间证书，PEM 格式）。
 extern const char* const CERTIFICATE_APPLE_DEV_G3_CA;     ///< Apple Worldwide Developer Relations CA G3（中间证书，PEM 格式）。
 
 /**

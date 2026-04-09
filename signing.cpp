@@ -401,7 +401,7 @@ static std::optional<std::string> slotBuildCMSSignature(X509* cert, EVP_PKEY* pk
 
     // 构建 CDHashes plist（截断到 20 字节）。
     std::string cdHashesPlist =
-        std::format(R"++(<?xml version="1.0" encoding=\"UTF-8\"?>
+        std::format(R"++(<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -412,8 +412,18 @@ static std::optional<std::string> slotBuildCMSSignature(X509* cert, EVP_PKEY* pk
 )++",
                     Base64Encode(cdSHA1.substr(0, 20)), Base64Encode(altCdSHA256.substr(0, 20)));
 
-    // 加载 Apple CA 证书链。
-    auto bother1 = BIO_new_mem_buf(CERTIFICATE_APPLE_DEV_G3_CA, -1);
+    // 加载 Apple CA 证书链：根据签名证书的 issuer 哈希选择对应的中间证书。
+    auto issuerHash = X509_issuer_name_hash(cert);
+    const char* intermediateCert = nullptr;
+    if (issuerHash == 0x817d2f7a) {
+        intermediateCert = CERTIFICATE_APPLE_DEV_CA;
+    } else if (issuerHash == 0x9b16b75c) {
+        intermediateCert = CERTIFICATE_APPLE_DEV_G3_CA;
+    } else {
+        Logger::warn("unknown issuer hash:", std::to_string(issuerHash), ", fallback to G3 CA");
+        intermediateCert = CERTIFICATE_APPLE_DEV_G3_CA;
+    }
+    auto bother1 = BIO_new_mem_buf(intermediateCert, -1);
     auto bother2 = BIO_new_mem_buf(CERTIFICATE_APPLE_ROOT_CA, -1);
     if (!bother1 || !bother2) return std::nullopt;
     ScopeGuard bioGuard{[&] {

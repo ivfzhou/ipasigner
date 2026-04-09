@@ -86,6 +86,41 @@ std::string WrapperPListXMLTag(std::string_view s);
 // 去除 plist 标签。
 std::string UnwrapPListXMLTag(std::string_view s);
 
+/// plist 文件格式枚举。
+enum class PListFormat { XML, Binary, Unknown };
+
+/**
+ * @brief 检测 plist 数据的格式（XML / Binary / Unknown）。
+ * @param data plist 文件的原始二进制数据。
+ * @return 检测到的格式类型。
+ */
+PListFormat DetectPListFormat(std::string_view data);
+
+/**
+ * @brief 将 Binary Plist 数据转换为 XML 格式的 plist 字符串。
+ *
+ * 解析 Apple Binary Plist（bplist00）格式，递归遍历对象表，
+ * 生成等价的 XML plist 输出。支持 dict、array、string、integer、real、
+ * boolean、data、date 等数据类型。
+ *
+ * @param data Binary Plist 的原始二进制数据。
+ * @return 成功返回 XML 格式 plist 字符串，失败返回 std::nullopt。
+ */
+std::optional<std::string> BPListToXML(std::string_view data);
+
+/**
+ * @brief 读取 plist 文件并确保返回 XML 格式。
+ *
+ * 先以二进制模式读取文件内容，检测格式后：
+ * - 若为 XML 格式则直接返回
+ * - 若为 Binary Plist 格式则自动转换为 XML 后返回
+ * - 若格式未知则尝试作为 XML 返回
+ *
+ * @param filePath plist 文件路径。
+ * @return 成功返回 XML 格式 plist 字符串，失败返回 std::nullopt。
+ */
+std::optional<std::string> ReadPListAsXML(const std::filesystem::path& filePath);
+
 // 合并两个列表，不去重。
 /**
  * @brief 合并两个列表，不去重。
