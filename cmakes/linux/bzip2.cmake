@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 set(BZIP2_VERSION 1ea1ac188ad4b9cb662e3f8314673c63df95a589)
+set(BZIP2_NAME bzip2)
 set(BZIP2_HEADER_NAME bzlib.h)
 set(BZIP2_LIBRARY_NAME libbz2_static.a)
 set(BZIP2_DIRECTORY ${DEPENDENCIES_DIRECTORY}/bzip2)
@@ -38,7 +39,7 @@ else ()
     set(BZIP2_BUILD_DIRECTORY ${BZIP2_DIRECTORY}/build)
     set(BZIP2_SOURCE_DIRECTORY ${BZIP2_DIRECTORY}/source)
     ExternalProject_Add(
-            bzip2
+            ${BZIP2_NAME}
             PREFIX ${BZIP2_DIRECTORY}
             URL https://github.com/libarchive/bzip2/archive/${BZIP2_VERSION}.zip
             SOURCE_DIR ${BZIP2_SOURCE_DIRECTORY}

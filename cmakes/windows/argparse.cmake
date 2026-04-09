@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 set(ARGPARSE_VERSION v3.2)
+set(ARGPARSE_NAME argparse)
 set(ARGPARSE_HEADER_NAME argparse/argparse.hpp)
 set(ARGPARSE_DIRECTORY ${DEPENDENCIES_DIRECTORY}/argparse)
 set(ARGPARSE_INSTALL_DIRECTORY ${ARGPARSE_DIRECTORY}/install)
@@ -28,7 +29,7 @@ else ()
     set(ARGPARSE_BUILD_DIRECTORY ${ARGPARSE_DIRECTORY}/build)
     set(ARGPARSE_SOURCE_DIRECTORY ${ARGPARSE_DIRECTORY}/source)
     ExternalProject_Add(
-            argparse
+            ${ARGPARSE_NAME}
             PREFIX ${ARGPARSE_DIRECTORY}
             URL https://github.com/p-ranav/argparse/archive/refs/tags/${ARGPARSE_VERSION}.zip
             SOURCE_DIR ${ARGPARSE_SOURCE_DIRECTORY}

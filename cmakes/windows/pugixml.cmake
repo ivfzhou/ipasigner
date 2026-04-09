@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 set(PUGIXML_VERSION v1.15)
+set(PUGIXML_NAME pugixml)
 set(PUGIXML_LIBRARY_NAME pugixml.lib)
 set(PUGIXML_HEADER_NAME pugixml.hpp)
 set(PUGIXML_DIRECTORY ${DEPENDENCIES_DIRECTORY}/pugixml)
@@ -38,7 +39,7 @@ else ()
     set(PUGIXML_BUILD_DIRECTORY ${PUGIXML_DIRECTORY}/build)
     set(PUGIXML_SOURCE_DIRECTORY ${PUGIXML_DIRECTORY}/source)
     ExternalProject_Add(
-            pugixml
+            ${PUGIXML_NAME}
             PREFIX ${PUGIXML_DIRECTORY}
             URL https://github.com/zeux/pugixml/archive/refs/tags/${PUGIXML_VERSION}.zip
             SOURCE_DIR ${PUGIXML_SOURCE_DIRECTORY}

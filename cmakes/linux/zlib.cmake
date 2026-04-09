@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 set(ZLIB_VERSION v1.3.2)
+set(ZLIB_NAME zlib)
 set(ZLIB_HEADER_NAME zlib.h)
 set(ZLIB_LIBRARY_NAME libz.a)
 set(ZLIB_DIRECTORY ${DEPENDENCIES_DIRECTORY}/zlib)
@@ -38,7 +39,7 @@ else ()
     set(ZLIB_BUILD_DIRECTORY ${ZLIB_DIRECTORY}/build)
     set(ZLIB_SOURCE_DIRECTORY ${ZLIB_DIRECTORY}/source)
     ExternalProject_Add(
-            zlib
+            ${ZLIB_NAME}
             PREFIX ${ZLIB_DIRECTORY}
             URL https://github.com/madler/zlib/archive/refs/tags/${ZLIB_VERSION}.zip
             SOURCE_DIR ${ZLIB_SOURCE_DIRECTORY}

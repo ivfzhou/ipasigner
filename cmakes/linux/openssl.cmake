@@ -10,6 +10,7 @@
 
 # 设置版本号、头文件名、依赖库名称。
 set(OPENSSL_VERSION openssl-3.6.1)
+set(OPENSSL_NAME openssl)
 set(OPENSSL_HEADER_NAME openssl)
 set(OPENSSL_LIBRARY_NAME libssl.a)
 set(CRYPTO_LIBRARY_NAME libcrypto.a)
@@ -20,6 +21,7 @@ set(OPENSSL_HEADERS_DIRECTORY ${OPENSSL_INSTALL_DIRECTORY}/include)
 if (CMAKE_SIZEOF_VOID_P EQUAL 8)
     set(OPENSSL_LIBRARY_DIRECTORY ${OPENSSL_INSTALL_DIRECTORY}/lib64)
 endif ()
+
 find_library(
         OPENSSL_LIBRARY
         NAMES ${OPENSSL_LIBRARY_NAME}
@@ -53,8 +55,10 @@ else ()
     endif ()
     set(OPENSSL_BUILD_DIRECTORY ${OPENSSL_DIRECTORY}/build)
     set(OPENSSL_SOURCE_DIRECTORY ${OPENSSL_DIRECTORY}/source)
+    get_filename_component(ZLIB_LIBRARY_DIRECTORY ${ZLIB_LIBRARY} DIRECTORY)
+    get_filename_component(ZSTD_LIBRARY_DIRECTORY ${ZSTD_LIBRARY} DIRECTORY)
     ExternalProject_Add(
-            openssl
+            ${OPENSSL_NAME}
             PREFIX ${OPENSSL_DIRECTORY}
             URL https://github.com/openssl/openssl/archive/refs/tags/${OPENSSL_VERSION}.zip
             SOURCE_DIR ${OPENSSL_SOURCE_DIRECTORY}
@@ -63,13 +67,14 @@ else ()
             --prefix=${OPENSSL_INSTALL_DIRECTORY}
             --openssldir=${OPENSSL_INSTALL_DIRECTORY}
             --with-zlib-include=${ZLIB_INCLUDE_DIRECTORY}
-            --with-zlib-lib=${ZLIB_LIBRARY}
+            --with-zlib-lib=${ZLIB_LIBRARY_DIRECTORY}
             --with-zstd-include=${ZSTD_INCLUDE_DIRECTORY}
-            --with-zstd-lib=${ZSTD_LIBRARY}
+            --with-zstd-lib=${ZSTD_LIBRARY_DIRECTORY}
             ${OPENSSL_BUILD_TYPE}
             no-docs
             no-shared
             enable-legacy
+            no-module
             no-tests
             zlib
             enable-zstd

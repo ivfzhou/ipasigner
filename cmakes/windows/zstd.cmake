@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 set(ZSTD_VERSION v1.5.7)
+set(ZSTD_NAME zstd)
 set(ZSTD_HEADER_NAME zstd.h)
 set(ZSTD_LIBRARY_NAME zstd_static.lib)
 set(ZSTD_DIRECTORY ${DEPENDENCIES_DIRECTORY}/zstd)
@@ -38,7 +39,7 @@ else ()
     set(ZSTD_BUILD_DIRECTORY ${ZSTD_DIRECTORY}/build)
     set(ZSTD_SOURCE_DIRECTORY ${ZSTD_DIRECTORY}/source)
     ExternalProject_Add(
-            zstd
+            ${ZSTD_NAME}
             PREFIX ${ZSTD_DIRECTORY}
             URL https://github.com/facebook/zstd/archive/refs/tags/${ZSTD_VERSION}.zip
             SOURCE_DIR ${ZSTD_SOURCE_DIRECTORY}

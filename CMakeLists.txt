@@ -45,6 +45,7 @@ else ()
 endif ()
 
 file(GLOB SOURCES ${CMAKE_SOURCE_DIR}/*.cpp)
+list(FILTER SOURCES EXCLUDE REGEX "test_.*\\.cpp$")
 include_directories(${CMAKE_SOURCE_DIR})
 add_executable(${PROJECT_NAME} ${SOURCES})
 list(REVERSE LIBRARIES)
@@ -55,3 +56,12 @@ foreach (v ${DEPENDENCIES})
 endforeach ()
 
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
+
+# 测试目标：Binary Plist 解析验证。
+file(GLOB TEST_SOURCES ${CMAKE_SOURCE_DIR}/*.cpp)
+list(FILTER TEST_SOURCES EXCLUDE REGEX "main\\.cpp$")
+add_executable(test_plist ${TEST_SOURCES})
+target_link_libraries(test_plist ${LIBRARIES})
+foreach (v ${DEPENDENCIES})
+    add_dependencies(test_plist ${v})
+endforeach ()

@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 set(LIBZIP_VERSION v1.11.4)
+set(LIBZIP_NAME libzip)
 set(LIBZIP_HEADER_NAME zip.h)
 set(LIBZIP_LIBRARY_NAME zip.lib)
 set(LIBZIP_DIRECTORY ${DEPENDENCIES_DIRECTORY}/libzip)
@@ -40,7 +41,7 @@ else ()
     set(LIBZIP_COMPILE_FLAG_RELEASE "${COMPILER_C_FLAGS_RELEASE} /DLZMA_API_STATIC")
     set(LIBZIP_COMPILE_FLAG_DEBUG "${COMPILER_C_FLAGS_DEBUG} /DLZMA_API_STATIC")
     ExternalProject_Add(
-            libzip
+            ${LIBZIP_NAME}
             PREFIX ${LIBZIP_DIRECTORY}
             URL https://github.com/nih-at/libzip/archive/refs/tags/${LIBZIP_VERSION}.zip
             SOURCE_DIR ${LIBZIP_SOURCE_DIRECTORY}

@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 set(XZ_VERSION v5.8.2)
+set(XZ_NAME xz)
 set(XZ_HEADER_NAME lzma.h)
 set(XZ_LIBRARY_NAME lzma.lib)
 set(XZ_DIRECTORY ${DEPENDENCIES_DIRECTORY}/xz)
@@ -38,7 +39,7 @@ else ()
     set(XZ_BUILD_DIRECTORY ${XZ_DIRECTORY}/build)
     set(XZ_SOURCE_DIRECTORY ${XZ_DIRECTORY}/source)
     ExternalProject_Add(
-            xz
+            ${XZ_NAME}
             PREFIX ${XZ_DIRECTORY}
             URL https://github.com/tukaani-project/xz/archive/refs/tags/${XZ_VERSION}.zip
             SOURCE_DIR ${XZ_SOURCE_DIRECTORY}

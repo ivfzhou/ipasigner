@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 set(OPENSSL_VERSION openssl-3.6.1)
+set(OPENSSL_NAME openssl)
 set(OPENSSL_HEADER_NAME openssl)
 set(OPENSSL_LIBRARY_NAME libssl.lib)
 set(CRYPTO_LIBRARY_NAME libcrypto.lib)
@@ -52,7 +53,7 @@ else ()
     set(OPENSSL_BUILD_DIRECTORY ${OPENSSL_DIRECTORY}/build)
     set(OPENSSL_SOURCE_DIRECTORY ${OPENSSL_DIRECTORY}/source)
     ExternalProject_Add(
-            openssl
+            ${OPENSSL_NAME}
             PREFIX ${OPENSSL_DIRECTORY}
             URL https://github.com/openssl/openssl/archive/refs/tags/${OPENSSL_VERSION}.zip
             SOURCE_DIR ${OPENSSL_SOURCE_DIRECTORY}
@@ -68,6 +69,7 @@ else ()
             no-docs
             no-shared
             enable-legacy
+            no-module
             no-tests
             zlib
             enable-zstd

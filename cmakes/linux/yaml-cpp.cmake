@@ -9,6 +9,7 @@
 # See the Mulan PSL v2 for more details.
 
 set(YAML_CPP_VERSION yaml-cpp-0.9.0)
+set(YAML_CPP_NAME yaml-cpp)
 set(YAML_CPP_HEADER_NAME yaml-cpp/yaml.h)
 set(YAML_CPP_LIBRARY_NAME libyaml-cpp.a)
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -42,7 +43,7 @@ else ()
     set(YAML_CPP_BUILD_DIRECTORY ${YAML_CPP_DIRECTORY}/build)
     set(YAML_CPP_SOURCE_DIRECTORY ${YAML_CPP_DIRECTORY}/source)
     ExternalProject_Add(
-            yaml-cpp
+            ${YAML_CPP_NAME}
             PREFIX ${YAML_CPP_DIRECTORY}
             URL https://github.com/jbeder/yaml-cpp/archive/refs/tags/${YAML_CPP_VERSION}.zip
             SOURCE_DIR ${YAML_CPP_SOURCE_DIRECTORY}
