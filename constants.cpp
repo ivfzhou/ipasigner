@@ -21,6 +21,8 @@
 
 namespace gitee::com::ivfzhou::ipasigner {
 
+extern const int DEFAULT_ZIP_COMPRESS_LEVEL = 6;
+
 // 程序退出码定义：1~15 分别对应不同类型的错误。
 const int EXIT_CODE_PARSE_OPTIONS_ERROR = 1;
 const int EXIT_CODE_PARSE_CONFIGURATION_ERROR = 2;
@@ -58,6 +60,7 @@ const char* const YAML_FIELD_ADD_PLIST_STRING_KEY = "addPlistStringKey";
 const char* const YAML_FIELD_REMOVE_PLIST_STRING_KEY = "removePlistStringKey";
 const char* const YAML_FIELD_ADDITIONAL_FILE_NAME = "additionalFileName";
 const char* const YAML_FIELD_ADDITIONAL_FILE_DATA = "additionalFileData";
+const char* const YAML_FIELD_ZIP_LEVEL = "zipLevel";
 
 // 命令行参数常量定义。
 const char* const OPTION_PREFIXES = "/-";

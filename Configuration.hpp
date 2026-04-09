@@ -31,6 +31,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "constants.hpp"
+
 namespace gitee::com::ivfzhou::ipasigner {
 
 /**
@@ -99,6 +101,9 @@ class Configuration final {
 
     /// 附加文件的内容。
     std::string additionalFileData;
+
+    /// zip 压缩等级。
+    int zipLevel = DEFAULT_ZIP_COMPRESS_LEVEL;
 };
 
 /**
@@ -116,7 +121,7 @@ std::optional<Configuration> ParseYAMLConfiguration(std::string_view filePath);
  * @param cfg 待校验的配置对象。
  * @return 校验通过返回 true，否则返回 false。
  */
-bool ValidateYAMLConfiguration(const Configuration& cfg);
+bool ValidateYAMLConfiguration(Configuration& cfg);
 
 }
 

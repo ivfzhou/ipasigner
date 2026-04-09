@@ -77,7 +77,7 @@ std::optional<Configuration> ParseYAMLConfiguration(const std::string_view fileP
  * @param cfg 待校验的配置对象。
  * @return 校验通过返回 true，否则返回 false。
  */
-bool ValidateYAMLConfiguration(const Configuration& cfg) {
+bool ValidateYAMLConfiguration(Configuration& cfg) {
     // 检查源 ipa 文件是否存在且合法。
     auto ipaFilePath = std::filesystem::absolute(std::filesystem::path(cfg.ipaFilePath));
     if (!std::filesystem::exists(ipaFilePath)) {
@@ -187,9 +187,14 @@ bool ValidateYAMLConfiguration(const Configuration& cfg) {
     if (cfg.additionalFileName.empty() && !cfg.additionalFileData.empty()) {
         Logger::error("additional file name is empty, but additional file data has value, will be no effect");
     }
-
     if (!cfg.additionalFileName.empty() && cfg.additionalFileData.empty()) {
         Logger::error("additional file data is empty, but additional file name has value, will be no effect");
+    }
+
+    // 校验 zip 压缩等级。
+    if (cfg.zipLevel < 0 || cfg.zipLevel > 9) {
+        Logger::warn("invalid zip level config:", cfg.zipLevel, ", set to default");
+        cfg.zipLevel = DEFAULT_ZIP_COMPRESS_LEVEL;
     }
 
     return true;
@@ -269,6 +274,23 @@ static bool getBool(const Node& node, const std::string& key) {
     return {};
 }
 
+/**
+ * @brief 从 YAML 节点中获取数字值。
+ * @param node YAML 节点。
+ * @param key 键名。
+ * @return 整形，不存在则返回 false。
+ * @throws std::runtime_error 若节点存在但类型不是标量。
+ */
+static int getInteger(const Node& node, const std::string& key) {
+    if (node[key]) {
+        if (node[key].IsScalar()) return node[key].as<bool>();
+
+        if (!node[key].IsNull()) throw std::runtime_error(key + " should be a scalar type");
+    }
+
+    return {};
+}
+
 /// 将 Configuration 对象序列化为 YAML 节点。
 Node convert<ipasigner::Configuration>::encode(const ipasigner::Configuration& cfg) {
     Node node{};
@@ -291,6 +313,7 @@ Node convert<ipasigner::Configuration>::encode(const ipasigner::Configuration& c
     node[ipasigner::YAML_FIELD_REMOVE_PLIST_STRING_KEY] = cfg.removePlistStringKey;
     node[ipasigner::YAML_FIELD_ADDITIONAL_FILE_NAME] = cfg.additionalFileName;
     node[ipasigner::YAML_FIELD_ADDITIONAL_FILE_DATA] = cfg.additionalFileData;
+    node[ipasigner::YAML_FIELD_ZIP_LEVEL] = cfg.zipLevel;
     return node;
 }
 
@@ -315,6 +338,7 @@ bool convert<ipasigner::Configuration>::decode(const Node& node, ipasigner::Conf
     cfg.removePlistStringKey = getStringVector(node, ipasigner::YAML_FIELD_REMOVE_PLIST_STRING_KEY);
     cfg.additionalFileName = getString(node, ipasigner::YAML_FIELD_ADDITIONAL_FILE_NAME);
     cfg.additionalFileData = getString(node, ipasigner::YAML_FIELD_ADDITIONAL_FILE_DATA);
+    cfg.zipLevel = getInteger(node, ipasigner::YAML_FIELD_ZIP_LEVEL);
     return true;
 }
 

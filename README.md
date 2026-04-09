@@ -195,4 +195,7 @@ removePlistStringKey:
 # 附加文件（写入到 .app 目录下）
 additionalFileName: signature.lock
 additionalFileData: abcd1234
+
+# 选填，ipa 包压缩等级。默认为 6。范围 [0, 9]。
+zipLevel: 6
 ```
