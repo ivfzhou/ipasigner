@@ -45,10 +45,8 @@ if (OPENSSL_LIBRARY AND OPENSSL_INCLUDE_DIRECTORY AND CRYPTO_LIBRARY)
 else ()
     include(ExternalProject)
     set(OPENSSL_BUILD_TYPE --release)
-    set(OPENSSL_COMPILE_FLAG "-MT")
     if (CMAKE_BUILD_TYPE STREQUAL "Debug")
         set(OPENSSL_BUILD_TYPE --debug)
-        set(OPENSSL_COMPILE_FLAG "-MTd")
     endif ()
     set(OPENSSL_BUILD_DIRECTORY ${OPENSSL_DIRECTORY}/build)
     set(OPENSSL_SOURCE_DIRECTORY ${OPENSSL_DIRECTORY}/source)
@@ -73,7 +71,6 @@ else ()
             no-tests
             zlib
             enable-zstd
-            ${OPENSSL_COMPILE_FLAG}
             BUILD_COMMAND call "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat" && nmake
             INSTALL_COMMAND call "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat" && nmake install
     )
