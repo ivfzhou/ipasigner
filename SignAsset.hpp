@@ -77,6 +77,8 @@ class SignAsset final {
 
     /// 是否弱注入动态库。
     bool weakInject{};
+
+    int compressLevel{};
 };
 
 }

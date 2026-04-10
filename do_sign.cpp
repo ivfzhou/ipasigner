@@ -1201,8 +1201,8 @@ static int signFiles(const SignInfo& signInfo, const SignAsset& signAsset, const
  * @param dest 输出的 IPA 文件路径（由配置文件指定）。
  * @return 0 表示成功，EXIT_CODE_ZIP_ERROR 表示打包失败。
  */
-static int packageIPA(const std::filesystem::path& ipaDir, const std::filesystem::path& dest) {
-    if (!Zip(ipaDir, dest)) return EXIT_CODE_ZIP_ERROR;
+static int packageIPA(const std::filesystem::path& ipaDir, const std::filesystem::path& dest, const int compressLevel) {
+    if (!Zip(ipaDir, dest, compressLevel)) return EXIT_CODE_ZIP_ERROR;
 
     return 0;
 }
@@ -1240,6 +1240,7 @@ int DoSign(const Options& opts) {
         Configuration cfg{};
         if (auto code = getYAMLConfiguration(cfg, opts.signOpts.configrationFilePath)) return code;
         signAsset.ipaOutputPath = cfg.destinationIpaFilePath;
+        signAsset.compressLevel = cfg.zipLevel;
 
         if (auto code = readProvisionFile(signAsset.provision, cfg.mobileProvisionFilePath)) return code;
 
@@ -1308,7 +1309,7 @@ int DoSign(const Options& opts) {
     if (auto code = signFiles(signAsset.signInfo, signAsset, signAsset.appDir)) return code;
 
     // 压缩文件。
-    if (auto code = packageIPA(signAsset.ipaDir, signAsset.ipaOutputPath)) return code;
+    if (auto code = packageIPA(signAsset.ipaDir, signAsset.ipaOutputPath, signAsset.compressLevel)) return code;
 
     // 清理文件。
     removeIpaDir(signAsset.ipaDir);

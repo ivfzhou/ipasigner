@@ -48,7 +48,7 @@ bool Unzip(const std::filesystem::path& ipaPath, const std::filesystem::path& de
  * @param outputPath 输出的 IPA 文件路径（若已存在将被覆盖）。
  * @return 成功返回 true，失败返回 false 并输出错误日志。
  */
-bool Zip(const std::filesystem::path& ipaDir, const std::filesystem::path& outputPath);
+bool Zip(const std::filesystem::path& ipaDir, const std::filesystem::path& outputPath, int compressLevel);
 
 }
 

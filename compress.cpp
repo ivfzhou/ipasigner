@@ -203,9 +203,10 @@ bool Unzip(const std::filesystem::path& ipaPath, const std::filesystem::path& de
  *
  * @param ipaDir IPA 解压后的根目录。
  * @param outputPath 输出的 IPA 文件路径。
+ * @param compressLevel
  * @return 成功返回 true，失败返回 false。
  */
-bool Zip(const std::filesystem::path& ipaDir, const std::filesystem::path& outputPath) {
+bool Zip(const std::filesystem::path& ipaDir, const std::filesystem::path& outputPath, const int compressLevel) {
     // 创建新的 ZIP 归档文件（若已存在则截断覆盖）。
     int err{};
     auto archive = zip_open(outputPath.string().c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
@@ -262,7 +263,7 @@ bool Zip(const std::filesystem::path& ipaDir, const std::filesystem::path& outpu
             }
 
             // 设置压缩方法为 Deflate。
-            if (zip_set_file_compression(archive, index, ZIP_CM_DEFLATE, 5) < 0) {
+            if (zip_set_file_compression(archive, index, ZIP_CM_DEFLATE, compressLevel) < 0) {
                 Logger::error("failed to set compression for file:", entryName, zip_strerror(archive));
                 zip_discard(archive);
                 archive = nullptr;
