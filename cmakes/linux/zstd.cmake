@@ -8,7 +8,6 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-set(ZSTD_VERSION v1.5.7)
 set(ZSTD_NAME zstd)
 set(ZSTD_HEADER_NAME zstd.h)
 set(ZSTD_LIBRARY_NAME libzstd.a)
@@ -41,20 +40,30 @@ else ()
     ExternalProject_Add(
             ${ZSTD_NAME}
             PREFIX ${ZSTD_DIRECTORY}
-            URL https://github.com/facebook/zstd/archive/refs/tags/${ZSTD_VERSION}.zip
+            URL ${ZSTD_URL}
+            URL_HASH SHA256=${ZSTD_SHA256}
             SOURCE_DIR ${ZSTD_SOURCE_DIRECTORY}
             BINARY_DIR ${ZSTD_BUILD_DIRECTORY}
             CONFIGURE_COMMAND ${CMAKE_COMMAND} --fresh -S ${ZSTD_SOURCE_DIRECTORY}/build/cmake -B ${ZSTD_BUILD_DIRECTORY}
-            -DCMAKE_INSTALL_PREFIX=${ZSTD_INSTALL_DIRECTORY}
-            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-            -DZSTD_BUILD_TESTS=OFF
+                -DCMAKE_INSTALL_PREFIX=${ZSTD_INSTALL_DIRECTORY}
+                -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+                -DZSTD_BUILD_TESTS=OFF
             BUILD_COMMAND ${CMAKE_COMMAND} --build ${ZSTD_BUILD_DIRECTORY} --config ${CMAKE_BUILD_TYPE} --parallel --clean-first
             INSTALL_COMMAND ${CMAKE_COMMAND} --build ${ZSTD_BUILD_DIRECTORY} --config ${CMAKE_BUILD_TYPE} --target install
     )
     set(ZSTD_LIBRARY ${ZSTD_LIBRARY_DIRECTORY}/${ZSTD_LIBRARY_NAME})
     set(ZSTD_INCLUDE_DIRECTORY ${ZSTD_HEADERS_DIRECTORY})
     list(APPEND DEPENDENCIES ${ZSTD_NAME})
+    unset(ZSTD_BUILD_DIRECTORY)
+    unset(ZSTD_SOURCE_DIRECTORY)
 endif ()
 
-include_directories(${ZSTD_INCLUDE_DIRECTORY})
+list(APPEND INCLUDES ${ZSTD_INCLUDE_DIRECTORY})
 list(APPEND LIBRARIES ${ZSTD_LIBRARY})
+
+unset(ZSTD_HEADER_NAME)
+unset(ZSTD_LIBRARY_NAME)
+unset(ZSTD_DIRECTORY)
+unset(ZSTD_INSTALL_DIRECTORY)
+unset(ZSTD_LIBRARY_DIRECTORY)
+unset(ZSTD_HEADERS_DIRECTORY)

@@ -8,7 +8,6 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-set(XZ_VERSION v5.8.2)
 set(XZ_NAME xz)
 set(XZ_HEADER_NAME lzma.h)
 set(XZ_LIBRARY_NAME liblzma.a)
@@ -41,20 +40,30 @@ else ()
     ExternalProject_Add(
             ${XZ_NAME}
             PREFIX ${XZ_DIRECTORY}
-            URL https://github.com/tukaani-project/xz/archive/refs/tags/${XZ_VERSION}.zip
+            URL ${XZ_URL}
+            URL_HASH SHA256=${XZ_SHA256}
             SOURCE_DIR ${XZ_SOURCE_DIRECTORY}
             BINARY_DIR ${XZ_BUILD_DIRECTORY}
             CONFIGURE_COMMAND ${CMAKE_COMMAND} --fresh -S ${XZ_SOURCE_DIRECTORY} -B ${XZ_BUILD_DIRECTORY}
-            -DCMAKE_INSTALL_PREFIX=${XZ_INSTALL_DIRECTORY}
-            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-            -DXZ_DOC=OFF
+                -DCMAKE_INSTALL_PREFIX=${XZ_INSTALL_DIRECTORY}
+                -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+                -DXZ_DOC=OFF
             BUILD_COMMAND ${CMAKE_COMMAND} --build ${XZ_BUILD_DIRECTORY} --config ${CMAKE_BUILD_TYPE} --parallel --clean-first
             INSTALL_COMMAND ${CMAKE_COMMAND} --build ${XZ_BUILD_DIRECTORY} --config ${CMAKE_BUILD_TYPE} --target install
     )
     set(XZ_LIBRARY ${XZ_LIBRARY_DIRECTORY}/${XZ_LIBRARY_NAME})
     set(XZ_INCLUDE_DIRECTORY ${XZ_HEADERS_DIRECTORY})
     list(APPEND DEPENDENCIES ${XZ_NAME})
+    unset(XZ_BUILD_DIRECTORY)
+    unset(XZ_SOURCE_DIRECTORY)
 endif ()
 
-include_directories(${XZ_INCLUDE_DIRECTORY})
+list(APPEND INCLUDES ${XZ_INCLUDE_DIRECTORY})
 list(APPEND LIBRARIES ${XZ_LIBRARY})
+
+unset(XZ_HEADER_NAME)
+unset(XZ_LIBRARY_NAME)
+unset(XZ_DIRECTORY)
+unset(XZ_INSTALL_DIRECTORY)
+unset(XZ_HEADERS_DIRECTORY)
+unset(XZ_LIBRARY_DIRECTORY)

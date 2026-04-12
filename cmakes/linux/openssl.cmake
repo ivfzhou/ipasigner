@@ -9,7 +9,6 @@
 # See the Mulan PSL v2 for more details.
 
 # 设置版本号、头文件名、依赖库名称。
-set(OPENSSL_VERSION openssl-3.6.1)
 set(OPENSSL_NAME openssl)
 set(OPENSSL_HEADER_NAME openssl)
 set(OPENSSL_LIBRARY_NAME libssl.a)
@@ -49,35 +48,35 @@ if (OPENSSL_LIBRARY AND OPENSSL_INCLUDE_DIRECTORY AND CRYPTO_LIBRARY)
     message(STATUS "found openssl include directory ${OPENSSL_INCLUDE_DIRECTORY}")
 else ()
     include(ExternalProject)
-    set(OPENSSL_BUILD_TYPE --release)
-    if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-        set(OPENSSL_BUILD_TYPE --debug)
-    endif ()
     set(OPENSSL_BUILD_DIRECTORY ${OPENSSL_DIRECTORY}/build)
     set(OPENSSL_SOURCE_DIRECTORY ${OPENSSL_DIRECTORY}/source)
     get_filename_component(ZLIB_LIBRARY_DIRECTORY ${ZLIB_LIBRARY} DIRECTORY)
     get_filename_component(ZSTD_LIBRARY_DIRECTORY ${ZSTD_LIBRARY} DIRECTORY)
+    if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(OPENSSL_BUILD_TYPE --debug)
+    endif ()
     ExternalProject_Add(
             ${OPENSSL_NAME}
             PREFIX ${OPENSSL_DIRECTORY}
-            URL https://github.com/openssl/openssl/archive/refs/tags/${OPENSSL_VERSION}.zip
+            URL ${OPENSSL_URL}
+            URL_HASH SHA256=${OPENSSL_SHA256}
             SOURCE_DIR ${OPENSSL_SOURCE_DIRECTORY}
             BINARY_DIR ${OPENSSL_BUILD_DIRECTORY}
             CONFIGURE_COMMAND perl ${OPENSSL_SOURCE_DIRECTORY}/Configure
-            --prefix=${OPENSSL_INSTALL_DIRECTORY}
-            --openssldir=${OPENSSL_INSTALL_DIRECTORY}
-            --with-zlib-include=${ZLIB_INCLUDE_DIRECTORY}
-            --with-zlib-lib=${ZLIB_LIBRARY_DIRECTORY}
-            --with-zstd-include=${ZSTD_INCLUDE_DIRECTORY}
-            --with-zstd-lib=${ZSTD_LIBRARY_DIRECTORY}
-            ${OPENSSL_BUILD_TYPE}
-            no-docs
-            no-shared
-            enable-legacy
-            no-module
-            no-tests
-            zlib
-            enable-zstd
+                --prefix=${OPENSSL_INSTALL_DIRECTORY}
+                --openssldir=${OPENSSL_INSTALL_DIRECTORY}
+                --with-zlib-include=${ZLIB_INCLUDE_DIRECTORY}
+                --with-zlib-lib=${ZLIB_LIBRARY_DIRECTORY}
+                --with-zstd-include=${ZSTD_INCLUDE_DIRECTORY}
+                --with-zstd-lib=${ZSTD_LIBRARY_DIRECTORY}
+                ${OPENSSL_BUILD_TYPE}
+                no-docs
+                no-shared
+                enable-legacy
+                no-module
+                no-tests
+                zlib
+                enable-zstd
             BUILD_COMMAND make
             INSTALL_COMMAND make install
     )
@@ -91,7 +90,17 @@ else ()
     if (TARGET ${ZLIB_NAME})
         add_dependencies(${OPENSSL_NAME} ${ZLIB_NAME})
     endif ()
+    unset(OPENSSL_BUILD_DIRECTORY)
+    unset(OPENSSL_SOURCE_DIRECTORY)
 endif ()
 
-include_directories(${OPENSSL_INCLUDE_DIRECTORY})
+list(APPEND INCLUDES ${OPENSSL_INCLUDE_DIRECTORY})
 list(APPEND LIBRARIES ${CRYPTO_LIBRARY} ${OPENSSL_LIBRARY})
+
+unset(OPENSSL_HEADER_NAME)
+unset(OPENSSL_LIBRARY_NAME)
+unset(CRYPTO_LIBRARY_NAME)
+unset(OPENSSL_DIRECTORY)
+unset(OPENSSL_INSTALL_DIRECTORY)
+unset(OPENSSL_LIBRARY_DIRECTORY)
+unset(OPENSSL_HEADERS_DIRECTORY)
