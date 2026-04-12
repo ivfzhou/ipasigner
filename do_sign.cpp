@@ -1232,6 +1232,7 @@ static void removeIpaDir(const std::filesystem::path& ipaDir) {
  * @return 程序退出码，0 表示成功。
  */
 int DoSign(const Options& opts) {
+    Logger::debugf("{}", "start to sign ipa file");
     Logger::info("start to sign ipa file");
 
     // 准备工作。

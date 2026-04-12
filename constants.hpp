@@ -108,6 +108,7 @@ extern const char* const PLIST_KEY_CF_BUNDLE_SHORT_VERSION_STRING; ///< Bundle �
 extern const char* const PLIST_KEY_CF_BUNDLE_EXECUTABLE; ///< 可执行文件名键。
 
 // 日志级别字符串常量。
+extern const char* const LEVEL_DEBUG; ///< 查错级别。
 extern const char* const LEVEL_INFO; ///< 信息级别。
 extern const char* const LEVEL_WARN; ///< 警告级别。
 extern const char* const LEVEL_ERROR; ///< 错误级别。

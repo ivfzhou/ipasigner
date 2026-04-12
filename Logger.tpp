@@ -30,6 +30,7 @@
 #include <ostream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "constants.hpp"
@@ -46,12 +47,37 @@ class Logger final {
     /// 输出 INFO 级别日志。
     template <typename... T> static void info(T&&... args) { println(std::cout, LEVEL_INFO, std::forward<T>(args)...); }
 
+    /// 输出 INFO 级别日志。
+    template <typename... T> static void infof(const std::string_view& fmt, T&&... args) {
+        println(std::cout, LEVEL_INFO, std::vformat(fmt, std::make_format_args(std::forward<T>(args)...)));
+    }
+
     /// 输出 WARN 级别日志。
     template <typename... T> static void warn(T&&... args) { println(std::cout, LEVEL_WARN, std::forward<T>(args)...); }
+
+    /// 输出 WARN 级别日志。
+    template <typename... T> static void warnf(const std::string_view& fmt, T&&... args) {
+        println(std::cout, LEVEL_WARN, std::vformat(fmt, std::make_format_args(std::forward<T>(args)...)));
+    }
 
     /// 输出 ERROR 级别日志。
     template <typename... T> static void error(T&&... args) {
         println(std::cout, LEVEL_ERROR, std::forward<T>(args)...);
+    }
+
+    /// 输出 ERROR 级别日志。
+    template <typename... T> static void errorf(const std::string_view& fmt, T&&... args) {
+        println(std::cout, LEVEL_ERROR, std::vformat(fmt, std::make_format_args(std::forward<T>(args)...)));
+    }
+
+    /// 输出 DEBUG 级别日志。
+    template <typename... T> static void debug(T&&... args) {
+        println(std::cout, LEVEL_DEBUG, std::forward<T>(args)...);
+    }
+
+    /// 输出 DEBUG 级别日志。
+    template <typename... T> static void debugf(const std::string_view& fmt, T&&... args) {
+        println(std::cout, LEVEL_DEBUG, std::vformat(fmt, std::make_format_args(std::forward<T>(args)...)));
     }
 
     /**

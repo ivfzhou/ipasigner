@@ -97,6 +97,7 @@ const char* const PLIST_KEY_CF_BUNDLE_SHORT_VERSION_STRING = "CFBundleShortVersi
 const char* const PLIST_KEY_CF_BUNDLE_EXECUTABLE = "CFBundleExecutable";
 
 // 日志级别字符串定义。
+const char* const LEVEL_DEBUG = "DEBUG";
 const char* const LEVEL_INFO = "INFO";
 const char* const LEVEL_WARN = "WARN";
 const char* const LEVEL_ERROR = "ERROR";
