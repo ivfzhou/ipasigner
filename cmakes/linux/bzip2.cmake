@@ -40,7 +40,7 @@ else ()
     ExternalProject_Add(
             ${BZIP2_NAME}
             PREFIX ${BZIP2_DIRECTORY}
-            URL ${BZIP2_YRL}
+            URL ${BZIP2_URL}
             URL_HASH SHA256=${BZIP2_SHA256}
             SOURCE_DIR ${BZIP2_SOURCE_DIRECTORY}
             BINARY_DIR ${BZIP2_BUILD_DIRECTORY}
