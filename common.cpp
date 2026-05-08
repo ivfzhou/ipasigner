@@ -39,11 +39,13 @@
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
+#include <pugixml.hpp>
 #include <zip.h>
 
 #include "Logger.tpp"
 #include "ScopeGuard.hpp"
 #include "common.hpp"
+#include "constants.hpp"
 
 namespace gitee::com::ivfzhou::ipasigner {
 
@@ -390,10 +392,18 @@ static std::string xmlEscape(const std::string_view s) {
     out.reserve(s.size());
     for (auto c : s) {
         switch (c) {
-            case '&': out += "&amp;"; break;
-            case '<': out += "&lt;"; break;
-            case '>': out += "&gt;"; break;
-            default: out += c; break;
+        case '&':
+            out += "&amp;";
+            break;
+        case '<':
+            out += "&lt;";
+            break;
+        case '>':
+            out += "&gt;";
+            break;
+        default:
+            out += c;
+            break;
         }
     }
     return out;
@@ -456,206 +466,204 @@ static bool bplistObjectToXML(const std::uint8_t* data, std::uint64_t dataSize,
     };
 
     switch (objectType) {
-        case 0x0: {
-            // null (0x00), false (0x08), true (0x09)。
-            if (objectInfo == 0x08) {
-                out += indent + "<false/>\n";
-            } else if (objectInfo == 0x09) {
-                out += indent + "<true/>\n";
-            }
-            // 0x00 (null) and 0x0F (fill) are skipped。
-            break;
+    case 0x0: {
+        // null (0x00), false (0x08), true (0x09)。
+        if (objectInfo == 0x08) {
+            out += indent + "<false/>\n";
+        } else if (objectInfo == 0x09) {
+            out += indent + "<true/>\n";
         }
-        case 0x1: {
-            // Integer：2^objectInfo 字节的大端整数。
-            std::uint8_t byteCount = 1u << objectInfo;
-            if (offset + 1 + byteCount > dataSize) return false;
-            auto val = bplistReadUInt(data, offset + 1, byteCount);
-            out += indent + "<integer>" + std::to_string(val) + "</integer>\n";
-            break;
-        }
-        case 0x2: {
-            // Real：4 字节 float 或 8 字节 double。
-            std::uint8_t byteCount = 1u << objectInfo;
-            if (offset + 1 + byteCount > dataSize) return false;
-            double val{};
-            if (byteCount == 4) {
-                std::uint32_t bits = static_cast<std::uint32_t>(bplistReadUInt(data, offset + 1, 4));
-                float f{};
-                std::memcpy(&f, &bits, 4);
-                val = f;
-            } else if (byteCount == 8) {
-                std::uint64_t bits = bplistReadUInt(data, offset + 1, 8);
-                std::memcpy(&val, &bits, 8);
-            }
-            out += indent + "<real>" + std::to_string(val) + "</real>\n";
-            break;
-        }
-        case 0x3: {
-            // Date：8 字节 double（Core Data 时间戳，基于 2001-01-01）。
-            if (offset + 9 > dataSize) return false;
+        // 0x00 (null) and 0x0F (fill) are skipped。
+        break;
+    }
+    case 0x1: {
+        // Integer：2^objectInfo 字节的大端整数。
+        std::uint8_t byteCount = 1u << objectInfo;
+        if (offset + 1 + byteCount > dataSize) return false;
+        auto val = bplistReadUInt(data, offset + 1, byteCount);
+        out += indent + "<integer>" + std::to_string(val) + "</integer>\n";
+        break;
+    }
+    case 0x2: {
+        // Real：4 字节 float 或 8 字节 double。
+        std::uint8_t byteCount = 1u << objectInfo;
+        if (offset + 1 + byteCount > dataSize) return false;
+        double val{};
+        if (byteCount == 4) {
+            std::uint32_t bits = static_cast<std::uint32_t>(bplistReadUInt(data, offset + 1, 4));
+            float f{};
+            std::memcpy(&f, &bits, 4);
+            val = f;
+        } else if (byteCount == 8) {
             std::uint64_t bits = bplistReadUInt(data, offset + 1, 8);
-            double timestamp{};
-            std::memcpy(&timestamp, &bits, 8);
-            out += indent + "<date>2001-01-01T00:00:00Z</date>\n";
-            break;
+            std::memcpy(&val, &bits, 8);
         }
-        case 0x4: {
-            // Binary data -> Base64。
-            auto pos = offset + 1;
-            auto count = readExtendedSize(pos);
-            if (pos + count > dataSize) return false;
-            // 简单 Base64 编码。
-            static constexpr char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-            std::string b64{};
-            for (std::uint64_t i{}; i < count; i += 3) {
-                auto remaining = count - i;
-                auto b0 = data[pos + i];
-                auto b1 = remaining > 1 ? data[pos + i + 1] : 0;
-                auto b2 = remaining > 2 ? data[pos + i + 2] : 0;
-                b64 += b64chars[b0 >> 2];
-                b64 += b64chars[((b0 & 0x03) << 4) | (b1 >> 4)];
-                b64 += remaining > 1 ? b64chars[((b1 & 0x0F) << 2) | (b2 >> 6)] : '=';
-                b64 += remaining > 2 ? b64chars[b2 & 0x3F] : '=';
+        out += indent + "<real>" + std::to_string(val) + "</real>\n";
+        break;
+    }
+    case 0x3: {
+        // Date：8 字节 double（Core Data 时间戳，基于 2001-01-01）。
+        if (offset + 9 > dataSize) return false;
+        std::uint64_t bits = bplistReadUInt(data, offset + 1, 8);
+        double timestamp{};
+        std::memcpy(&timestamp, &bits, 8);
+        out += indent + "<date>2001-01-01T00:00:00Z</date>\n";
+        break;
+    }
+    case 0x4: {
+        // Binary data -> Base64。
+        auto pos = offset + 1;
+        auto count = readExtendedSize(pos);
+        if (pos + count > dataSize) return false;
+        // 简单 Base64 编码。
+        static constexpr char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string b64{};
+        for (std::uint64_t i{}; i < count; i += 3) {
+            auto remaining = count - i;
+            auto b0 = data[pos + i];
+            auto b1 = remaining > 1 ? data[pos + i + 1] : 0;
+            auto b2 = remaining > 2 ? data[pos + i + 2] : 0;
+            b64 += b64chars[b0 >> 2];
+            b64 += b64chars[((b0 & 0x03) << 4) | (b1 >> 4)];
+            b64 += remaining > 1 ? b64chars[((b1 & 0x0F) << 2) | (b2 >> 6)] : '=';
+            b64 += remaining > 2 ? b64chars[b2 & 0x3F] : '=';
+        }
+        out += indent + "<data>" + b64 + "</data>\n";
+        break;
+    }
+    case 0x5: {
+        // ASCII string。
+        auto pos = offset + 1;
+        auto count = readExtendedSize(pos);
+        if (pos + count > dataSize) return false;
+        std::string str(reinterpret_cast<const char*>(data + pos), count);
+        out += indent + "<string>" + xmlEscape(str) + "</string>\n";
+        break;
+    }
+    case 0x6: {
+        // Unicode (UTF-16BE) string。
+        auto pos = offset + 1;
+        auto count = readExtendedSize(pos);
+        if (pos + count * 2 > dataSize) return false;
+        // 简单 UTF-16BE -> ASCII/UTF-8 转换。
+        std::string str{};
+        for (std::uint64_t i{}; i < count; ++i) {
+            auto ch = static_cast<std::uint16_t>(bplistReadUInt(data, pos + i * 2, 2));
+            if (ch < 0x80) {
+                str += static_cast<char>(ch);
+            } else if (ch < 0x800) {
+                str += static_cast<char>(0xC0 | (ch >> 6));
+                str += static_cast<char>(0x80 | (ch & 0x3F));
+            } else {
+                str += static_cast<char>(0xE0 | (ch >> 12));
+                str += static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
+                str += static_cast<char>(0x80 | (ch & 0x3F));
             }
-            out += indent + "<data>" + b64 + "</data>\n";
-            break;
         }
-        case 0x5: {
-            // ASCII string。
-            auto pos = offset + 1;
-            auto count = readExtendedSize(pos);
-            if (pos + count > dataSize) return false;
-            std::string str(reinterpret_cast<const char*>(data + pos), count);
-            out += indent + "<string>" + xmlEscape(str) + "</string>\n";
-            break;
+        out += indent + "<string>" + xmlEscape(str) + "</string>\n";
+        break;
+    }
+    case 0x8: {
+        // UID：以 dict{CF$UID: integer} 形式输出。
+        std::uint8_t byteCount = objectInfo + 1;
+        if (offset + 1 + byteCount > dataSize) return false;
+        auto val = bplistReadUInt(data, offset + 1, byteCount);
+        out += indent + "<dict>\n";
+        out += indent + "\t<key>CF$UID</key>\n";
+        out += indent + "\t<integer>" + std::to_string(val) + "</integer>\n";
+        out += indent + "</dict>\n";
+        break;
+    }
+    case 0xA: {
+        // Array。
+        auto pos = offset + 1;
+        auto count = readExtendedSize(pos);
+        if (pos + count * objectRefSize > dataSize) return false;
+        out += indent + "<array>\n";
+        for (std::uint64_t i{}; i < count; ++i) {
+            auto childIdx = bplistReadUInt(data, pos + i * objectRefSize, objectRefSize);
+            if (!bplistObjectToXML(data, dataSize, offsetTable, objectCount, objectRefSize, childIdx, out, depth + 1))
+                return false;
         }
-        case 0x6: {
-            // Unicode (UTF-16BE) string。
-            auto pos = offset + 1;
-            auto count = readExtendedSize(pos);
-            if (pos + count * 2 > dataSize) return false;
-            // 简单 UTF-16BE -> ASCII/UTF-8 转换。
-            std::string str{};
-            for (std::uint64_t i{}; i < count; ++i) {
-                auto ch = static_cast<std::uint16_t>(bplistReadUInt(data, pos + i * 2, 2));
-                if (ch < 0x80) {
-                    str += static_cast<char>(ch);
-                } else if (ch < 0x800) {
-                    str += static_cast<char>(0xC0 | (ch >> 6));
-                    str += static_cast<char>(0x80 | (ch & 0x3F));
-                } else {
-                    str += static_cast<char>(0xE0 | (ch >> 12));
-                    str += static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
-                    str += static_cast<char>(0x80 | (ch & 0x3F));
+        out += indent + "</array>\n";
+        break;
+    }
+    case 0xD: {
+        // Dict。
+        auto pos = offset + 1;
+        auto count = readExtendedSize(pos);
+        auto keysStart = pos;
+        auto valsStart = pos + count * objectRefSize;
+        if (valsStart + count * objectRefSize > dataSize) return false;
+        out += indent + "<dict>\n";
+        for (std::uint64_t i{}; i < count; ++i) {
+            auto keyIdx = bplistReadUInt(data, keysStart + i * objectRefSize, objectRefSize);
+            auto valIdx = bplistReadUInt(data, valsStart + i * objectRefSize, objectRefSize);
+            // Key 必须是字符串类型，直接内联输出。
+            if (keyIdx >= objectCount) return false;
+            auto keyOffset = offsetTable[keyIdx];
+            if (keyOffset >= dataSize) return false;
+            auto keyMarker = data[keyOffset];
+            auto keyType = static_cast<std::uint8_t>(keyMarker >> 4);
+            auto keyInfo = static_cast<std::uint8_t>(keyMarker & 0x0F);
+            std::string keyStr{};
+            if (keyType == 0x5) {
+                auto keyPos = keyOffset + 1;
+                auto keyCount = static_cast<std::uint64_t>(keyInfo);
+                if (keyInfo == 0x0F) {
+                    if (keyPos < dataSize) {
+                        auto sm = data[keyPos];
+                        auto sp = static_cast<std::uint8_t>(sm & 0x0F);
+                        std::uint8_t sb = 1u << sp;
+                        keyPos++;
+                        keyCount = bplistReadUInt(data, keyPos, sb);
+                        keyPos += sb;
+                    }
                 }
-            }
-            out += indent + "<string>" + xmlEscape(str) + "</string>\n";
-            break;
-        }
-        case 0x8: {
-            // UID：以 dict{CF$UID: integer} 形式输出。
-            std::uint8_t byteCount = objectInfo + 1;
-            if (offset + 1 + byteCount > dataSize) return false;
-            auto val = bplistReadUInt(data, offset + 1, byteCount);
-            out += indent + "<dict>\n";
-            out += indent + "\t<key>CF$UID</key>\n";
-            out += indent + "\t<integer>" + std::to_string(val) + "</integer>\n";
-            out += indent + "</dict>\n";
-            break;
-        }
-        case 0xA: {
-            // Array。
-            auto pos = offset + 1;
-            auto count = readExtendedSize(pos);
-            if (pos + count * objectRefSize > dataSize) return false;
-            out += indent + "<array>\n";
-            for (std::uint64_t i{}; i < count; ++i) {
-                auto childIdx = bplistReadUInt(data, pos + i * objectRefSize, objectRefSize);
-                if (!bplistObjectToXML(data, dataSize, offsetTable, objectCount, objectRefSize, childIdx, out,
-                                       depth + 1))
-                    return false;
-            }
-            out += indent + "</array>\n";
-            break;
-        }
-        case 0xD: {
-            // Dict。
-            auto pos = offset + 1;
-            auto count = readExtendedSize(pos);
-            auto keysStart = pos;
-            auto valsStart = pos + count * objectRefSize;
-            if (valsStart + count * objectRefSize > dataSize) return false;
-            out += indent + "<dict>\n";
-            for (std::uint64_t i{}; i < count; ++i) {
-                auto keyIdx = bplistReadUInt(data, keysStart + i * objectRefSize, objectRefSize);
-                auto valIdx = bplistReadUInt(data, valsStart + i * objectRefSize, objectRefSize);
-                // Key 必须是字符串类型，直接内联输出。
-                if (keyIdx >= objectCount) return false;
-                auto keyOffset = offsetTable[keyIdx];
-                if (keyOffset >= dataSize) return false;
-                auto keyMarker = data[keyOffset];
-                auto keyType = static_cast<std::uint8_t>(keyMarker >> 4);
-                auto keyInfo = static_cast<std::uint8_t>(keyMarker & 0x0F);
-                std::string keyStr{};
-                if (keyType == 0x5) {
-                    auto keyPos = keyOffset + 1;
-                    auto keyCount = static_cast<std::uint64_t>(keyInfo);
-                    if (keyInfo == 0x0F) {
-                        if (keyPos < dataSize) {
-                            auto sm = data[keyPos];
-                            auto sp = static_cast<std::uint8_t>(sm & 0x0F);
-                            std::uint8_t sb = 1u << sp;
-                            keyPos++;
-                            keyCount = bplistReadUInt(data, keyPos, sb);
-                            keyPos += sb;
-                        }
+                if (keyPos + keyCount <= dataSize)
+                    keyStr = std::string(reinterpret_cast<const char*>(data + keyPos), keyCount);
+            } else if (keyType == 0x6) {
+                auto keyPos = keyOffset + 1;
+                auto keyCount = static_cast<std::uint64_t>(keyInfo);
+                if (keyInfo == 0x0F) {
+                    if (keyPos < dataSize) {
+                        auto sm = data[keyPos];
+                        auto sp = static_cast<std::uint8_t>(sm & 0x0F);
+                        std::uint8_t sb = 1u << sp;
+                        keyPos++;
+                        keyCount = bplistReadUInt(data, keyPos, sb);
+                        keyPos += sb;
                     }
-                    if (keyPos + keyCount <= dataSize)
-                        keyStr = std::string(reinterpret_cast<const char*>(data + keyPos), keyCount);
-                } else if (keyType == 0x6) {
-                    auto keyPos = keyOffset + 1;
-                    auto keyCount = static_cast<std::uint64_t>(keyInfo);
-                    if (keyInfo == 0x0F) {
-                        if (keyPos < dataSize) {
-                            auto sm = data[keyPos];
-                            auto sp = static_cast<std::uint8_t>(sm & 0x0F);
-                            std::uint8_t sb = 1u << sp;
-                            keyPos++;
-                            keyCount = bplistReadUInt(data, keyPos, sb);
-                            keyPos += sb;
-                        }
-                    }
-                    if (keyPos + keyCount * 2 <= dataSize) {
-                        for (std::uint64_t j{}; j < keyCount; ++j) {
-                            auto ch = static_cast<std::uint16_t>(bplistReadUInt(data, keyPos + j * 2, 2));
-                            if (ch < 0x80) {
-                                keyStr += static_cast<char>(ch);
-                            } else if (ch < 0x800) {
-                                keyStr += static_cast<char>(0xC0 | (ch >> 6));
-                                keyStr += static_cast<char>(0x80 | (ch & 0x3F));
-                            } else {
-                                keyStr += static_cast<char>(0xE0 | (ch >> 12));
-                                keyStr += static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
-                                keyStr += static_cast<char>(0x80 | (ch & 0x3F));
-                            }
-                        }
-                    }
-                } else {
-                    return false;
                 }
-                out += indent + "\t<key>" + xmlEscape(keyStr) + "</key>\n";
-                if (!bplistObjectToXML(data, dataSize, offsetTable, objectCount, objectRefSize, valIdx, out,
-                                       depth + 1))
-                    return false;
+                if (keyPos + keyCount * 2 <= dataSize) {
+                    for (std::uint64_t j{}; j < keyCount; ++j) {
+                        auto ch = static_cast<std::uint16_t>(bplistReadUInt(data, keyPos + j * 2, 2));
+                        if (ch < 0x80) {
+                            keyStr += static_cast<char>(ch);
+                        } else if (ch < 0x800) {
+                            keyStr += static_cast<char>(0xC0 | (ch >> 6));
+                            keyStr += static_cast<char>(0x80 | (ch & 0x3F));
+                        } else {
+                            keyStr += static_cast<char>(0xE0 | (ch >> 12));
+                            keyStr += static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
+                            keyStr += static_cast<char>(0x80 | (ch & 0x3F));
+                        }
+                    }
+                }
+            } else {
+                return false;
             }
-            out += indent + "</dict>\n";
-            break;
+            out += indent + "\t<key>" + xmlEscape(keyStr) + "</key>\n";
+            if (!bplistObjectToXML(data, dataSize, offsetTable, objectCount, objectRefSize, valIdx, out, depth + 1))
+                return false;
         }
-        default: {
-            Logger::warn("unsupported bplist object type:", std::to_string(objectType));
-            break;
-        }
+        out += indent + "</dict>\n";
+        break;
+    }
+    default: {
+        Logger::warn("unsupported bplist object type:", std::to_string(objectType));
+        break;
+    }
     }
 
     return true;
@@ -735,6 +743,378 @@ std::optional<std::string> BPListToXML(const std::string_view data) {
     return xml;
 }
 
+// ===== XML -> Binary Plist 转换实现 =====
+
+namespace {
+
+/// Binary Plist 序列化过程中使用的对象类型。
+enum class BPObjectType {
+    False,
+    True,
+    Integer,
+    String,
+    Data,
+    Array,
+    Dict,
+    Real,
+};
+
+/// 构建 Binary Plist 时使用的对象描述。
+struct BPObject {
+    BPObjectType type{};
+    std::string strValue{}; ///< String/Data 的内容。
+    std::uint64_t intValue{}; ///< Integer 的内容。
+    double realValue{}; ///< Real 的内容。
+    std::vector<std::uint64_t> children{}; ///< Array 的子对象索引。
+    std::vector<std::uint64_t> dictKeys{}; ///< Dict 的键对象索引。
+    std::vector<std::uint64_t> dictValues{}; ///< Dict 的值对象索引。
+};
+
+/// 判断一个字符串是否为纯 ASCII（所有字符都在 0~0x7F 范围内）。
+static bool isAsciiOnly(const std::string& s) {
+    for (auto c : s)
+        if (static_cast<unsigned char>(c) > 0x7F) return false;
+    return true;
+}
+
+/// 以大端序追加指定字节数的无符号整数到输出缓冲区。
+static void appendBE(std::string& out, std::uint64_t val, int nbytes) {
+    for (int i = nbytes - 1; i >= 0; --i) out.push_back(static_cast<char>(val >> (i * 8) & 0xFF));
+}
+
+/// 写入 Binary Plist 的对象长度字段（小长度内联、大长度使用 integer marker）。
+static void writeLength(std::string& out, std::uint64_t len, std::uint8_t marker) {
+    if (len < 15) {
+        out.push_back(static_cast<char>(marker | len));
+    } else {
+        out.push_back(static_cast<char>(marker | 0xF));
+        // int marker 0x10 | log2(bytes)。
+        int nbytes = 1;
+        auto tmp = len;
+        while (tmp > 0xFF) {
+            nbytes *= 2;
+            tmp >>= 8;
+        }
+        if (nbytes > 8) nbytes = 8;
+        int sp = 0;
+        {
+            auto n = nbytes;
+            while (n > 1) {
+                n >>= 1;
+                ++sp;
+            }
+        }
+        out.push_back(static_cast<char>(0x10 | sp));
+        appendBE(out, len, nbytes);
+    }
+}
+
+/// 计算某数值需要的最小字节宽度（2 的幂次对齐）。
+static int calcIntBytes(std::uint64_t val) {
+    if (val <= 0xFF) return 1;
+    if (val <= 0xFFFF) return 2;
+    if (val <= 0xFFFFFFFFULL) return 4;
+    return 8;
+}
+
+/// 递归将 pugixml 节点转换为 BPObject 并加入 objects 列表，返回其索引。
+static std::uint64_t xmlNodeToBPObject(const pugi::xml_node& valueNode, std::vector<BPObject>& objects) {
+    std::string_view name(valueNode.name());
+    BPObject obj{};
+    if (name == "true") {
+        obj.type = BPObjectType::True;
+    } else if (name == "false") {
+        obj.type = BPObjectType::False;
+    } else if (name == "integer") {
+        obj.type = BPObjectType::Integer;
+        std::string_view text(valueNode.child_value());
+        std::uint64_t val{};
+        bool negative{};
+        auto p = text.data();
+        auto end = p + text.size();
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p;
+        if (p < end && *p == '-') {
+            negative = true;
+            ++p;
+        }
+        for (; p < end; ++p) {
+            if (*p >= '0' && *p <= '9') {
+                val = val * 10 + (*p - '0');
+            } else {
+                break;
+            }
+        }
+        if (negative) val = static_cast<std::uint64_t>(-static_cast<std::int64_t>(val));
+        obj.intValue = val;
+    } else if (name == "string") {
+        obj.type = BPObjectType::String;
+        obj.strValue = valueNode.child_value();
+    } else if (name == "data") {
+        obj.type = BPObjectType::Data;
+        // 将 base64 字符串解码为二进制数据。
+        std::string base64(valueNode.child_value());
+        // 去除所有空白字符。
+        std::string cleaned{};
+        cleaned.reserve(base64.size());
+        for (auto c : base64)
+            if (c != '\n' && c != '\r' && c != ' ' && c != '\t') cleaned.push_back(c);
+        // 简单 base64 解码。
+        auto b64val = [](char c) -> int {
+            if (c >= 'A' && c <= 'Z') return c - 'A';
+            if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+            if (c >= '0' && c <= '9') return c - '0' + 52;
+            if (c == '+') return 62;
+            if (c == '/') return 63;
+            return -1;
+        };
+        std::string decoded{};
+        std::uint32_t buf{};
+        int bits = 0;
+        for (auto c : cleaned) {
+            if (c == '=') break;
+            int v = b64val(c);
+            if (v < 0) continue;
+            buf = (buf << 6) | v;
+            bits += 6;
+            if (bits >= 8) {
+                bits -= 8;
+                decoded.push_back(static_cast<char>(buf >> bits & 0xFF));
+            }
+        }
+        obj.strValue = std::move(decoded);
+    } else if (name == "real") {
+        obj.type = BPObjectType::Real;
+        obj.realValue = std::strtod(valueNode.child_value(), nullptr);
+    } else if (name == "array") {
+        obj.type = BPObjectType::Array;
+        std::vector<std::uint64_t> children{};
+        for (auto child = valueNode.first_child(); child; child = child.next_sibling()) {
+            if (child.type() != pugi::node_element) continue;
+            obj.children.push_back(0); // 占位。
+        }
+        // 先占位插入父节点，再递归子节点。
+        auto selfIdx = objects.size();
+        objects.push_back(std::move(obj));
+        std::size_t ci = 0;
+        for (auto child = valueNode.first_child(); child; child = child.next_sibling()) {
+            if (child.type() != pugi::node_element) continue;
+            auto childIdx = xmlNodeToBPObject(child, objects);
+            objects[selfIdx].children[ci++] = childIdx;
+        }
+        return selfIdx;
+    } else if (name == "dict") {
+        obj.type = BPObjectType::Dict;
+        auto selfIdx = objects.size();
+        objects.push_back(std::move(obj));
+        // 先收集所有 key-value 对。
+        std::vector<std::string> keys{};
+        std::vector<pugi::xml_node> values{};
+        for (auto it = valueNode.begin(); it != valueNode.end(); ++it) {
+            if (std::string_view(it->name()) != "key") continue;
+            std::string keyText(it->child_value());
+            auto valNode = it->next_sibling();
+            while (valNode && valNode.type() != pugi::node_element) valNode = valNode.next_sibling();
+            if (!valNode) break;
+            keys.push_back(std::move(keyText));
+            values.push_back(valNode);
+            // 跳过 value 节点，避免将其误作为 key 再次处理。
+            it = valNode;
+        }
+        for (std::size_t i = 0; i < keys.size(); ++i) {
+            BPObject keyObj{};
+            keyObj.type = BPObjectType::String;
+            keyObj.strValue = keys[i];
+            auto keyIdx = objects.size();
+            objects.push_back(std::move(keyObj));
+            objects[selfIdx].dictKeys.push_back(keyIdx);
+        }
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            auto valIdx = xmlNodeToBPObject(values[i], objects);
+            objects[selfIdx].dictValues.push_back(valIdx);
+        }
+        return selfIdx;
+    } else if (name == "date") {
+        // 简化处理：写入为字符串。
+        obj.type = BPObjectType::String;
+        obj.strValue = valueNode.child_value();
+    } else {
+        // 未知类型：默认当空字符串处理。
+        obj.type = BPObjectType::String;
+    }
+
+    auto idx = objects.size();
+    objects.push_back(std::move(obj));
+    return idx;
+}
+
+/// 将单个 BPObject 序列化并写入 out，返回其起始偏移量。
+static std::uint64_t writeBPObject(std::string& out, const BPObject& obj, int objectRefSize) {
+    auto startOff = out.size();
+    switch (obj.type) {
+    case BPObjectType::False:
+        out.push_back('\x08');
+        break;
+    case BPObjectType::True:
+        out.push_back('\x09');
+        break;
+    case BPObjectType::Integer: {
+        auto val = obj.intValue;
+        int nbytes = calcIntBytes(val);
+        // sp = log2(nbytes)。
+        int sp = 0;
+        auto n = nbytes;
+        while (n > 1) {
+            n >>= 1;
+            ++sp;
+        }
+        out.push_back(static_cast<char>(0x10 | sp));
+        appendBE(out, val, nbytes);
+        break;
+    }
+    case BPObjectType::Real: {
+        out.push_back('\x23'); // 0x23 = real, 8 bytes。
+        std::uint64_t bits{};
+        std::memcpy(&bits, &obj.realValue, 8);
+        appendBE(out, bits, 8);
+        break;
+    }
+    case BPObjectType::String: {
+        if (isAsciiOnly(obj.strValue)) {
+            writeLength(out, obj.strValue.size(), 0x50);
+            out.append(obj.strValue);
+        } else {
+            // UTF-16BE 编码。
+            std::vector<std::uint16_t> units{};
+            auto p = reinterpret_cast<const unsigned char*>(obj.strValue.data());
+            auto end = p + obj.strValue.size();
+            while (p < end) {
+                std::uint32_t cp{};
+                if (*p < 0x80) {
+                    cp = *p++;
+                } else if ((*p & 0xE0) == 0xC0 && p + 1 < end) {
+                    cp = (*p++ & 0x1F) << 6;
+                    cp |= *p++ & 0x3F;
+                } else if ((*p & 0xF0) == 0xE0 && p + 2 < end) {
+                    cp = (*p++ & 0x0F) << 12;
+                    cp |= (*p++ & 0x3F) << 6;
+                    cp |= *p++ & 0x3F;
+                } else if ((*p & 0xF8) == 0xF0 && p + 3 < end) {
+                    cp = (*p++ & 0x07) << 18;
+                    cp |= (*p++ & 0x3F) << 12;
+                    cp |= (*p++ & 0x3F) << 6;
+                    cp |= *p++ & 0x3F;
+                } else {
+                    ++p;
+                    cp = 0xFFFD;
+                }
+                if (cp <= 0xFFFF) {
+                    units.push_back(static_cast<std::uint16_t>(cp));
+                } else {
+                    cp -= 0x10000;
+                    units.push_back(static_cast<std::uint16_t>(0xD800 | (cp >> 10)));
+                    units.push_back(static_cast<std::uint16_t>(0xDC00 | (cp & 0x3FF)));
+                }
+            }
+            writeLength(out, units.size(), 0x60);
+            for (auto u : units) appendBE(out, u, 2);
+        }
+        break;
+    }
+    case BPObjectType::Data: {
+        writeLength(out, obj.strValue.size(), 0x40);
+        out.append(obj.strValue);
+        break;
+    }
+    case BPObjectType::Array: {
+        writeLength(out, obj.children.size(), 0xA0);
+        for (auto idx : obj.children) appendBE(out, idx, objectRefSize);
+        break;
+    }
+    case BPObjectType::Dict: {
+        writeLength(out, obj.dictKeys.size(), 0xD0);
+        for (auto idx : obj.dictKeys) appendBE(out, idx, objectRefSize);
+        for (auto idx : obj.dictValues) appendBE(out, idx, objectRefSize);
+        break;
+    }
+    }
+    return startOff;
+}
+
+}
+
+/**
+ * @brief 将 XML 格式的 plist 字符串转换为 Binary Plist（bplist00）二进制数据。
+ */
+std::optional<std::string> XMLToBPList(const std::string_view xml) {
+    pugi::xml_document doc{};
+    auto result = doc.load_buffer(xml.data(), xml.size());
+    if (!result) {
+        Logger::error("failed to parse XML plist:", result.description());
+        return std::nullopt;
+    }
+
+    auto plistNode = doc.child(PLIST_TAG_ROOT);
+    if (!plistNode) {
+        Logger::error("no <plist> root found in XML");
+        return std::nullopt;
+    }
+    // 找到第一个元素子节点，作为根对象。
+    pugi::xml_node rootElement{};
+    for (auto child = plistNode.first_child(); child; child = child.next_sibling()) {
+        if (child.type() == pugi::node_element) {
+            rootElement = child;
+            break;
+        }
+    }
+    if (!rootElement) {
+        Logger::error("no root element under <plist>");
+        return std::nullopt;
+    }
+
+    std::vector<BPObject> objects{};
+    objects.reserve(256);
+    auto rootIdx = xmlNodeToBPObject(rootElement, objects);
+    auto numObjects = objects.size();
+
+    // 计算 objectRefSize：根据对象总数决定 dict/array 中每个引用占的字节数。
+    int objectRefSize = 1;
+    if (numObjects > 0xFF) objectRefSize = 2;
+    if (numObjects > 0xFFFF) objectRefSize = 4;
+    if (numObjects > 0xFFFFFFFFULL) objectRefSize = 8;
+
+    // 序列化对象区。
+    std::string out{};
+    out.reserve(numObjects * 32 + 256);
+    out.append("bplist00", 8);
+
+    std::vector<std::uint64_t> offsets{};
+    offsets.reserve(numObjects);
+    for (auto&& obj : objects) {
+        auto off = writeBPObject(out, obj, objectRefSize);
+        offsets.push_back(off);
+    }
+
+    // 写入 Offset Table。
+    std::uint64_t maxOffset = out.size();
+    int offsetIntSize = 1;
+    if (maxOffset > 0xFF) offsetIntSize = 2;
+    if (maxOffset > 0xFFFF) offsetIntSize = 4;
+    if (maxOffset > 0xFFFFFFFFULL) offsetIntSize = 8;
+
+    std::uint64_t offsetTableOffset = out.size();
+    for (auto off : offsets) appendBE(out, off, offsetIntSize);
+
+    // 写入 Trailer（32 字节）。
+    out.append(6, '\0'); // 6 个保留字节（0x00）。
+    out.push_back(static_cast<char>(offsetIntSize));
+    out.push_back(static_cast<char>(objectRefSize));
+    appendBE(out, numObjects, 8);
+    appendBE(out, rootIdx, 8);
+    appendBE(out, offsetTableOffset, 8);
+
+    return out;
+}
+
 /**
  * @brief 读取 plist 文件并确保返回 XML 格式。
  *
@@ -752,17 +1132,32 @@ std::optional<std::string> ReadPListAsXML(const std::filesystem::path& filePath)
 
     auto format = DetectPListFormat(*dataOpt);
     switch (format) {
-        case PListFormat::XML:
-            return dataOpt;
-        case PListFormat::Binary: {
-            Logger::info("detected binary plist, converting to XML:", filePath.string());
-            return BPListToXML(*dataOpt);
-        }
-        case PListFormat::Unknown:
-        default:
-            Logger::warn("unknown plist format, treating as XML:", filePath.string());
-            return dataOpt;
+    case PListFormat::XML:
+        return dataOpt;
+    case PListFormat::Binary: {
+        Logger::info("detected binary plist, converting to XML:", filePath.string());
+        return BPListToXML(*dataOpt);
     }
+    case PListFormat::Unknown:
+    default:
+        Logger::warn("unknown plist format, treating as XML:", filePath.string());
+        return dataOpt;
+    }
+}
+
+/**
+ * @brief 将 XML 格式的 plist 字符串转换为 Binary Plist 后写入指定文件。
+ *
+ * zsign 的 -C 检查等工具依赖 plist 文件为 Binary Plist（bplist00）格式，
+ * 因此在将修改后的 Info.plist 写回 IPA 时，使用本函数进行格式转换。
+ * 若转换失败则回退为直接写入 XML。
+ */
+bool WritePListFile(const std::filesystem::path& filePath, const std::string_view xmlPlist) {
+    if (auto bpOpt = XMLToBPList(xmlPlist)) {
+        return WriteFile(filePath, *bpOpt);
+    }
+    Logger::warn("failed to convert plist to binary, fallback to XML:", filePath.string());
+    return WriteFile(filePath, xmlPlist);
 }
 
 }

@@ -283,7 +283,7 @@ static bool getBool(const Node& node, const std::string& key) {
  */
 static int getInteger(const Node& node, const std::string& key) {
     if (node[key]) {
-        if (node[key].IsScalar()) return node[key].as<bool>();
+        if (node[key].IsScalar()) return node[key].as<int>();
 
         if (!node[key].IsNull()) throw std::runtime_error(key + " should be a scalar type");
     }

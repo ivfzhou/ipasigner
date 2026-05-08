@@ -880,6 +880,15 @@ bool SignMachOFile(const std::filesystem::path& filePath, X509* cert, EVP_PKEY* 
     auto fileSize = static_cast<std::uint32_t>(data.size());
     auto magic = *reinterpret_cast<std::uint32_t*>(base);
 
+    // 当调用方未提供 bundleId 时（如签名独立 dylib），使用文件名作为默认标识。
+    // 这与 zsign 行为一致：basename(filePath) 作为 CodeDirectory 的 identifier。
+    std::string fallbackBundleId{};
+    std::string_view effectiveBundleId = bundleId;
+    if (effectiveBundleId.empty()) {
+        fallbackBundleId = filePath.filename().string();
+        effectiveBundleId = fallbackBundleId;
+    }
+
     bool ok{};
     if (magic == FAT_MAGIC_VAL || magic == FAT_CIGAM_VAL) {
         auto fatHeader = reinterpret_cast<FatHeader*>(base);
@@ -888,16 +897,16 @@ bool SignMachOFile(const std::filesystem::path& filePath, X509* cert, EVP_PKEY* 
             auto arch = reinterpret_cast<FatArch*>(base + sizeof(FatHeader) + sizeof(FatArch) * i);
             auto archOffset = magic == FAT_MAGIC_VAL ? arch->offset : Swap(arch->offset);
             if (auto archSize = magic == FAT_MAGIC_VAL ? arch->size : Swap(arch->size);
-                !signSingleArch(data, archOffset, archSize, cert, pkey, bundleId, teamId, subjectCN, entitlements,
-                                infoPlistSHA1, infoPlistSHA256, codeResourcesData))
+                !signSingleArch(data, archOffset, archSize, cert, pkey, effectiveBundleId, teamId, subjectCN,
+                                entitlements, infoPlistSHA1, infoPlistSHA256, codeResourcesData))
                 return false;
             // 重新获取 base（data 可能因扩展而重新分配）。
             base = reinterpret_cast<std::uint8_t*>(data.data());
         }
         ok = true;
     } else if (magic == MH_MAGIC_VAL || magic == MH_CIGAM_VAL || magic == MH_MAGIC_64_VAL || magic == MH_CIGAM_64_VAL) {
-        ok = signSingleArch(data, 0, fileSize, cert, pkey, bundleId, teamId, subjectCN, entitlements, infoPlistSHA1,
-                            infoPlistSHA256, codeResourcesData);
+        ok = signSingleArch(data, 0, fileSize, cert, pkey, effectiveBundleId, teamId, subjectCN, entitlements,
+                            infoPlistSHA1, infoPlistSHA256, codeResourcesData);
     } else {
         Logger::error("invalid mach-o file magic:", std::to_string(magic));
         return false;

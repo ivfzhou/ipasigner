@@ -236,7 +236,7 @@ bool Zip(const std::filesystem::path& ipaDir, const std::filesystem::path& outpu
         if (entry.is_directory(ec)) {
             // 目录条目：名称以 / 结尾。
             auto dirName = entryName + FILE_NAME_SLASH;
-            if (zip_dir_add(archive, dirName.c_str(), ZIP_FL_ENC_UTF_8) < 0) {
+            if (zip_dir_add(archive, dirName.c_str(), ZIP_FL_ENC_GUESS) < 0) {
                 Logger::error("failed to add directory to zip:", dirName, zip_strerror(archive));
                 zip_discard(archive);
                 archive = nullptr;
@@ -253,7 +253,9 @@ bool Zip(const std::filesystem::path& ipaDir, const std::filesystem::path& outpu
             }
 
             // 将文件添加到归档中（若同名条目已存在则替换）。
-            auto index = zip_file_add(archive, entryName.c_str(), source, ZIP_FL_ENC_UTF_8 | ZIP_FL_OVERWRITE);
+            // 使用 ZIP_FL_ENC_GUESS 避免强制设置 UTF-8 标志位 (0x800)，
+            // 以保持与 Apple iOS IPA 使用的传统 zip 格式兼容（flags=0）。
+            auto index = zip_file_add(archive, entryName.c_str(), source, ZIP_FL_ENC_GUESS | ZIP_FL_OVERWRITE);
             if (index < 0) {
                 Logger::error("failed to add file to zip:", entryName, zip_strerror(archive));
                 zip_source_free(source);
@@ -288,7 +290,7 @@ bool Zip(const std::filesystem::path& ipaDir, const std::filesystem::path& outpu
                 return false;
             }
 
-            auto index = zip_file_add(archive, entryName.c_str(), source, ZIP_FL_ENC_UTF_8 | ZIP_FL_OVERWRITE);
+            auto index = zip_file_add(archive, entryName.c_str(), source, ZIP_FL_ENC_GUESS | ZIP_FL_OVERWRITE);
             if (index < 0) {
                 Logger::error("failed to add symlink to zip:", entryName, zip_strerror(archive));
                 zip_source_free(source);

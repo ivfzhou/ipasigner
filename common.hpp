@@ -109,6 +109,17 @@ PListFormat DetectPListFormat(std::string_view data);
 std::optional<std::string> BPListToXML(std::string_view data);
 
 /**
+ * @brief 将 XML 格式的 plist 字符串转换为 Binary Plist（bplist00）二进制数据。
+ *
+ * 使用 pugixml 解析 XML，然后按 Apple Binary Plist 格式重新序列化。
+ * 支持 dict、array、string、integer、true/false、data 等常用类型。
+ *
+ * @param xml XML 格式的 plist 字符串。
+ * @return 成功返回 Binary Plist 的二进制数据，失败返回 std::nullopt。
+ */
+std::optional<std::string> XMLToBPList(std::string_view xml);
+
+/**
  * @brief 读取 plist 文件并确保返回 XML 格式。
  *
  * 先以二进制模式读取文件内容，检测格式后：
@@ -120,6 +131,18 @@ std::optional<std::string> BPListToXML(std::string_view data);
  * @return 成功返回 XML 格式 plist 字符串，失败返回 std::nullopt。
  */
 std::optional<std::string> ReadPListAsXML(const std::filesystem::path& filePath);
+
+/**
+ * @brief 将 XML 格式的 plist 字符串转换为 Binary Plist 后写入指定文件。
+ *
+ * Apple 的 plist 解析器（如 zsign 内置的 PReader）更可靠地支持 Binary Plist 格式，
+ * 因此在将修改后的 Info.plist 写回 IPA 时，需要先将 XML 转为 bplist00 二进制再落盘。
+ *
+ * @param filePath 目标文件路径。
+ * @param xmlPlist XML 格式的 plist 字符串。
+ * @return 成功返回 true，失败返回 false。
+ */
+bool WritePListFile(const std::filesystem::path& filePath, std::string_view xmlPlist);
 
 // 合并两个列表，不去重。
 /**

@@ -390,7 +390,7 @@ static int updateBundleIdIfNeed(const std::string& bundleId, const std::filesyst
         Logger::error("failed to set plist value");
         return EXIT_CODE_WRITE_PLIST_ERROR;
     }
-    if (!WriteFile(appDir / FILE_NAME_PLIST, plist)) {
+    if (!WritePListFile(appDir / FILE_NAME_PLIST, plist)) {
         Logger::error("failed to write plist file:", appDir / FILE_NAME_PLIST);
         return EXIT_CODE_WRITE_FILE_ERROR;
     }
@@ -479,7 +479,7 @@ static int updateBundleIdIfNeed(const std::string& bundleId, const std::filesyst
         }
 
         // 修改后的 plist 写回文件。
-        if (!WriteFile(pluginAppDir / FILE_NAME_PLIST, pluginAppPlist)) {
+        if (!WritePListFile(pluginAppDir / FILE_NAME_PLIST, pluginAppPlist)) {
             Logger::error("failed to write plugin app plist");
             return EXIT_CODE_WRITE_FILE_ERROR;
         }
@@ -516,7 +516,7 @@ static int updateBundleNameIfNeed(const std::string& bundleName, const std::file
     }
 
     // 写回 plist。
-    if (!WriteFile(appDir / FILE_NAME_PLIST, plist)) {
+    if (!WritePListFile(appDir / FILE_NAME_PLIST, plist)) {
         Logger::error("failed to write plist file:", appDir / FILE_NAME_PLIST);
         return EXIT_CODE_WRITE_FILE_ERROR;
     }
@@ -552,7 +552,7 @@ static int updateBundleVersionIfNeed(const std::string& bundleVersion, const std
     }
 
     // 写回 plist。
-    if (!WriteFile(appDir / FILE_NAME_PLIST, plist)) {
+    if (!WritePListFile(appDir / FILE_NAME_PLIST, plist)) {
         Logger::error("failed to write plist file:", appDir / FILE_NAME_PLIST);
         return EXIT_CODE_WRITE_FILE_ERROR;
     }
@@ -591,7 +591,7 @@ static int updatePList(const std::filesystem::path& appDir, const std::map<std::
     }
 
     // 写回 plist。
-    if (!WriteFile(appDir / FILE_NAME_PLIST, plist)) {
+    if (!WritePListFile(appDir / FILE_NAME_PLIST, plist)) {
         Logger::error("failed to write plugin app plist:", (appDir / FILE_NAME_PLIST).string());
         return EXIT_CODE_WRITE_FILE_ERROR;
     }
@@ -627,7 +627,7 @@ static int updateZhLocaleFile(const std::string& bundleName, const std::filesyst
     }
 
     // 写回文件。
-    if (!WriteFile(appDir / FILE_PATH_IPA_ZH_LOCALE, plist)) {
+    if (!WritePListFile(appDir / FILE_PATH_IPA_ZH_LOCALE, plist)) {
         Logger::error("failed to write plist file:", appDir / FILE_PATH_IPA_ZH_LOCALE);
         return EXIT_CODE_WRITE_FILE_ERROR;
     }
@@ -663,7 +663,7 @@ static int updateNewZhLocaleFile(const std::string& bundleName, const std::files
     }
 
     // 写回文件。
-    if (!WriteFile(appDir / FILE_PATH_NEW_IPA_ZH_LOCALE, plist)) {
+    if (!WritePListFile(appDir / FILE_PATH_NEW_IPA_ZH_LOCALE, plist)) {
         Logger::error("failed to write plist file:", appDir / FILE_PATH_NEW_IPA_ZH_LOCALE);
         return EXIT_CODE_WRITE_FILE_ERROR;
     }
@@ -1124,8 +1124,10 @@ static int signFiles(const SignInfo& signInfo, const SignAsset& signAsset, const
     for (auto&& v : signInfo.files) {
         Logger::info("sign dylib file:", v);
         auto dylibPath = rootAppDir / v;
-        if (!SignMachOFile(dylibPath, signAsset.certificate.second.get(), signAsset.certificate.first.get(), "", "", "",
-                           "", "", "", "")) {
+        // 传入 teamId 与 subjectCN，避免因空值导致 dylib 未被签名。
+        // bundleId 为空时，SignMachOFile 内部会从 dylib 的 __info_plist 派生或回退为文件名。
+        if (!SignMachOFile(dylibPath, signAsset.certificate.second.get(), signAsset.certificate.first.get(), "",
+                           signAsset.teamId, signAsset.certificateName, "", "", "", "")) {
             Logger::error("failed to sign dylib file:", v);
             return EXIT_CODE_SIGN_ERROR;
         }
