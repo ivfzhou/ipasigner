@@ -55,6 +55,9 @@ class Options final {
     /// 是否使用签名子命令（sign）。
     bool sign{};
 
+    /// 是否启用详细输出（DEBUG 日志）。
+    bool verbose{};
+
     /// 签名子命令的配置选项。
     SignOptions signOpts;
 };

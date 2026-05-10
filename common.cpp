@@ -46,6 +46,7 @@
 #include "ScopeGuard.hpp"
 #include "common.hpp"
 #include "constants.hpp"
+#include "macho.hpp"
 
 namespace gitee::com::ivfzhou::ipasigner {
 
@@ -98,7 +99,8 @@ std::optional<std::string> ReadFile(const std::filesystem::path& filePath) {
         file.read(content.data(), size);
         return std::move(content);
     } catch (const std::ios_base::failure& e) {
-        Logger::error("failed to read file:", e.what(), "code:", e.code().message());
+        // 仅记录调试日志，由调用方根据上下文（必需文件 vs 可选文件）决定是否输出错误。
+        Logger::debug("failed to read file:", e.what(), "code:", e.code().message());
         return std::nullopt;
     }
 }
@@ -317,7 +319,7 @@ std::string UnwrapPListXMLTag(const std::string_view s) {
  */
 bool MakeDir(const std::filesystem::path& dirPath, const std::filesystem::perms perm) {
     if (std::filesystem::exists(dirPath)) {
-        Logger::warn("directory already exists:", dirPath.string());
+        Logger::debug("directory already exists:", dirPath.string());
         return true;
     }
 
@@ -367,6 +369,90 @@ PListFormat DetectPListFormat(const std::string_view data) {
         return PListFormat::XML;
 
     return PListFormat::Unknown;
+}
+
+/**
+ * @brief 探测二进制文件的容器格式。
+ *
+ * 实现思路对标 keystore-cli/macho.DetectBinaryFormat：
+ *   1. 读取头部 8 字节；
+ *   2. 若以 "!<arch>\n" 开头 -> StaticArchive；
+ *   3. 若是 0xCAFEBABE/0xBEBAFECA -> Fat 容器，再检查 nfat_arch 个 slice
+ *      的首部，确定是 Fat Mach-O 还是 Fat Archive；
+ *   4. 否则若是 Mach-O 4 个魔数之一 -> MachO，否则 Unknown。
+ */
+BinaryFormat DetectBinaryFormat(const std::filesystem::path& filePath) {
+    constexpr const char archiveMagic[] = "!<arch>\n"; // 共 8 字节，不含末尾 NUL。
+    constexpr std::size_t archiveMagicLen = sizeof(archiveMagic) - 1;
+
+    auto isThinMachO = [](std::uint32_t magicLE) -> bool {
+        return magicLE == MH_MAGIC_VAL || magicLE == MH_CIGAM_VAL || magicLE == MH_MAGIC_64_VAL ||
+            magicLE == MH_CIGAM_64_VAL;
+    };
+
+    std::ifstream file(filePath, std::ios::binary);
+    if (!file.is_open()) return BinaryFormat::Unknown;
+
+    char header[8]{};
+    file.read(header, sizeof(header));
+    auto headerSize = static_cast<std::size_t>(file.gcount());
+    if (headerSize == 0) return BinaryFormat::Unknown;
+
+    if (headerSize >= archiveMagicLen && std::memcmp(header, archiveMagic, archiveMagicLen) == 0)
+        return BinaryFormat::StaticArchive;
+
+    if (headerSize < 4) return BinaryFormat::Unknown;
+
+    auto readU32LE = [](const char* p) {
+        return static_cast<std::uint32_t>(static_cast<std::uint8_t>(p[0])) |
+            static_cast<std::uint32_t>(static_cast<std::uint8_t>(p[1])) << 8 |
+            static_cast<std::uint32_t>(static_cast<std::uint8_t>(p[2])) << 16 |
+            static_cast<std::uint32_t>(static_cast<std::uint8_t>(p[3])) << 24;
+    };
+    auto magicLE = readU32LE(header);
+
+    // Mach-O 文件的 magic 在文件中以小端存放（thin），或以大端 0xCAFEBABE 存放（fat）。
+    // 我们以小端方式读出 32-bit magic：
+    //   - 文件字节 CA FE BA BE（标准磁盘上的 fat，大端写入） -> magicLE = 0xBEBAFECA (FAT_CIGAM_VAL)
+    //   - 文件字节 BE BA FE CA（小端写入的 fat，少见）       -> magicLE = 0xCAFEBABE (FAT_MAGIC_VAL)
+    // 因此：当 magicLE == FAT_CIGAM_VAL 时，文件中是大端格式，nfat_arch 需要 swap；
+    //      当 magicLE == FAT_MAGIC_VAL 时，文件中是小端格式，nfat_arch 直接 LE 即可。
+    if (magicLE == FAT_MAGIC_VAL || magicLE == FAT_CIGAM_VAL) {
+        bool fileIsBigEndian = magicLE == FAT_CIGAM_VAL;
+        if (headerSize < 8) return BinaryFormat::Unknown;
+        std::uint32_t nfat = readU32LE(header + 4);
+        if (fileIsBigEndian) nfat = Swap(nfat);
+        if (nfat == 0 || nfat > 1024) return BinaryFormat::Unknown;
+
+        std::vector<char> table(static_cast<std::size_t>(nfat) * 20);
+        file.seekg(8, std::ios::beg);
+        file.read(table.data(), static_cast<std::streamsize>(table.size()));
+        auto tableRead = static_cast<std::size_t>(file.gcount());
+
+        bool foundMachO{};
+        for (std::uint32_t i = 0; i < nfat; ++i) {
+            std::size_t base = static_cast<std::size_t>(i) * 20;
+            if (base + 20 > tableRead) break;
+            std::uint32_t offset = readU32LE(&table[base + 8]);
+            if (fileIsBigEndian) offset = Swap(offset);
+
+            char sliceHeader[8]{};
+            file.seekg(offset, std::ios::beg);
+            file.read(sliceHeader, sizeof(sliceHeader));
+            auto sliceRead = static_cast<std::size_t>(file.gcount());
+            if (sliceRead >= archiveMagicLen && std::memcmp(sliceHeader, archiveMagic, archiveMagicLen) == 0)
+                return BinaryFormat::FatStaticArchive;
+            if (sliceRead >= 4 && isThinMachO(readU32LE(sliceHeader))) {
+                foundMachO = true;
+                continue;
+            }
+            return BinaryFormat::Unknown;
+        }
+        return foundMachO ? BinaryFormat::FatMachO : BinaryFormat::Unknown;
+    }
+
+    if (isThinMachO(magicLE)) return BinaryFormat::MachO;
+    return BinaryFormat::Unknown;
 }
 
 /**
@@ -1135,12 +1221,12 @@ std::optional<std::string> ReadPListAsXML(const std::filesystem::path& filePath)
     case PListFormat::XML:
         return dataOpt;
     case PListFormat::Binary: {
-        Logger::info("detected binary plist, converting to XML:", filePath.string());
+        Logger::debug("detected binary plist, converting to XML:", filePath.string());
         return BPListToXML(*dataOpt);
     }
     case PListFormat::Unknown:
     default:
-        Logger::warn("unknown plist format, treating as XML:", filePath.string());
+        Logger::debug("unknown plist format, treating as XML:", filePath.string());
         return dataOpt;
     }
 }

@@ -154,13 +154,13 @@ std::optional<std::pair<EvpPkeyPtr, X509Ptr>> ParseCertificate(std::string_view 
     // 尝试方式二：以 DER 格式读取私钥。
     if (!evpPKey) {
         (void)BIO_reset(bioPKey);
-        Logger::warn("PEM_read_bio_PrivateKey failed:", GetOpensslErrors());
+        Logger::debug("PEM_read_bio_PrivateKey failed:", GetOpensslErrors());
         evpPKey.reset(d2i_PrivateKey_bio(bioPKey, nullptr));
     }
     // 尝试方式三：以 PKCS#12 格式解析（需要加载 legacy 和 default provider 以支持旧算法）。
     if (!evpPKey) {
         (void)BIO_reset(bioPKey);
-        Logger::warn("d2i_PrivateKey_bio failed:", GetOpensslErrors());
+        Logger::debug("d2i_PrivateKey_bio failed:", GetOpensslErrors());
         auto legacyProvider = OSSL_PROVIDER_load(nullptr, "legacy");
         auto defaultProvider = OSSL_PROVIDER_load(nullptr, "default");
         ScopeGuard providerDeleter{[&legacyProvider, &defaultProvider] {

@@ -96,6 +96,40 @@ enum class PListFormat { XML, Binary, Unknown };
  */
 PListFormat DetectPListFormat(std::string_view data);
 
+/// 二进制可执行文件格式枚举（用于在签名前判断文件是否为可签名的 Mach-O）。
+enum class BinaryFormat {
+    Unknown, ///< 未知或未识别的格式。
+    MachO, ///< 单架构 Mach-O。
+    FatMachO, ///< Fat (universal) Mach-O。
+    StaticArchive, ///< Unix `ar` 静态库归档（"!<arch>\n"），通常出现在 static framework 中。
+    FatStaticArchive, ///< Fat 容器内嵌的静态归档（罕见）。
+};
+
+/**
+ * @brief 判断二进制格式是否为可签名的 Mach-O。
+ */
+inline bool IsSignableMachO(BinaryFormat fmt) { return fmt == BinaryFormat::MachO || fmt == BinaryFormat::FatMachO; }
+
+/**
+ * @brief 判断二进制格式是否为静态库归档。
+ */
+inline bool IsStaticArchive(BinaryFormat fmt) {
+    return fmt == BinaryFormat::StaticArchive || fmt == BinaryFormat::FatStaticArchive;
+}
+
+/**
+ * @brief 探测二进制文件的容器格式。
+ *
+ * 通过读取文件头部魔数判断：
+ *   - "!<arch>\n"            -> StaticArchive
+ *   - 0xFEEDFACE/0xCEFAEDFE/0xFEEDFACF/0xCFFAEDFE -> MachO
+ *   - 0xCAFEBABE/0xBEBAFECA  -> FatMachO（进一步检查每个 slice 是 Mach-O 还是 archive）
+ *
+ * @param filePath 待检测的文件路径。
+ * @return 检测到的格式；读取失败也返回 Unknown。
+ */
+BinaryFormat DetectBinaryFormat(const std::filesystem::path& filePath);
+
 /**
  * @brief 将 Binary Plist 数据转换为 XML 格式的 plist 字符串。
  *

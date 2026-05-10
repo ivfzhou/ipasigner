@@ -21,6 +21,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <ios>
@@ -30,7 +33,18 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 #include <zip.h>
+#include <zlib.h>
 
 #include "Logger.tpp"
 #include "ScopeGuard.hpp"
@@ -39,6 +53,54 @@
 #include "constants.hpp"
 
 namespace gitee::com::ivfzhou::ipasigner {
+
+/**
+ * @brief 将 std::filesystem::path 转换为 UTF-8 编码的 std::string。
+ *
+ * 在 Windows 上 path::string() 默认使用系统 ANSI 编码（如 CP936），
+ * 这会导致非 ASCII 文件名（如中文名）在写入 zip 中央目录时被错误编码，
+ * 进而使 zsign / Apple plist 工具读出乱码。本函数显式按 UTF-8 转换。
+ *
+ * @param p 文件系统路径。
+ * @return UTF-8 编码的字符串表示。
+ */
+static std::string pathToUtf8(const std::filesystem::path& p) {
+#ifdef _WIN32
+    auto wide = p.wstring();
+    if (wide.empty()) return {};
+    auto u8len =
+        WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+    if (u8len <= 0) return p.string();
+    std::string utf8(static_cast<std::size_t>(u8len), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), utf8.data(), u8len, nullptr, nullptr);
+    return utf8;
+#else
+    return p.string();
+#endif
+}
+
+/**
+ * @brief 将 UTF-8 编码的字符串安全地转换为 std::filesystem::path。
+ *
+ * 在 Windows 上 std::filesystem::path 默认假定 const char* 是系统 ANSI 编码（如 GBK/CP936），
+ * 直接构造 path 时 UTF-8 字节会被错误解码为 ANSI，导致中文等非 ASCII 文件名被破坏。
+ * 本函数显式将 UTF-8 字节转为 UTF-16 后再构造 path，保证文件名正确。
+ *
+ * @param utf8 UTF-8 编码的字符串。
+ * @return 由 UTF-16 字符串构造的 std::filesystem::path。
+ */
+static std::filesystem::path utf8ToPath(const std::string_view utf8) {
+#ifdef _WIN32
+    if (utf8.empty()) return {};
+    auto wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    if (wlen <= 0) return std::filesystem::path(std::string(utf8));
+    std::wstring wide(static_cast<std::size_t>(wlen), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), wide.data(), wlen);
+    return std::filesystem::path(wide);
+#else
+    return std::filesystem::path(std::string(utf8));
+#endif
+}
 
 /**
  * @brief 解压 IPA 文件到指定目录。
@@ -77,7 +139,7 @@ bool Unzip(const std::filesystem::path& ipaPath, const std::filesystem::path& de
             return false;
         }
 
-        auto destPath = std::filesystem::path(destDir) / entryName;
+        auto destPath = std::filesystem::path(destDir) / utf8ToPath(entryName);
 
         // 如果条目名称以 / 结尾，则为目录，创建之。
         if (std::string entryNameStr(entryName); !entryNameStr.empty() && entryNameStr.back() == '/') {
@@ -140,7 +202,7 @@ bool Unzip(const std::filesystem::path& ipaPath, const std::filesystem::path& de
             }
 
             std::string entryNameStr(entryName);
-            auto destPath = std::filesystem::path(destDir) / entryNameStr;
+            auto destPath = std::filesystem::path(destDir) / utf8ToPath(entryNameStr);
 
             // 打开归档中的文件条目。
             auto zipFile = zip_fopen_index(threadArchive, entryIndex, 0);
@@ -197,141 +259,392 @@ bool Unzip(const std::filesystem::path& ipaPath, const std::filesystem::path& de
 /**
  * @brief 将 IPA 文件夹打包为 IPA 文件（ZIP 格式）。
  *
- * 递归遍历 ipaDir 下的所有文件和目录，将它们添加到 ZIP 归档中。
- * 支持目录、普通文件和符号链接三种类型。
- * 归档中的条目路径为相对于 ipaDir 的相对路径。
+ * 实现策略：
+ *   1. 扫描 ipaDir，把所有目录条目、文件条目、符号链接条目分类收集；
+ *   2. 多线程并行使用 zlib raw deflate（windowBits = -15）压缩各文件到内存缓冲区，
+ *      并计算 CRC32；
+ *   3. 主线程串行写入 ZIP 流：local file header + 已压缩数据 + central directory + EOCD。
+ *
+ * 这样压缩计算（CPU 密集）可以充分利用多核，IO 写入是顺序流式，避免在 libzip
+ * 内部串行 deflate 成为瓶颈。
  *
  * @param ipaDir IPA 解压后的根目录。
  * @param outputPath 输出的 IPA 文件路径。
- * @param compressLevel
+ * @param compressLevel 压缩等级 [0, 9]，0 = 不压缩，9 = 最高压缩。
  * @return 成功返回 true，失败返回 false。
  */
-bool Zip(const std::filesystem::path& ipaDir, const std::filesystem::path& outputPath, const int compressLevel) {
-    // 创建新的 ZIP 归档文件（若已存在则截断覆盖）。
-    int err{};
-    auto archive = zip_open(outputPath.string().c_str(), ZIP_CREATE | ZIP_TRUNCATE, &err);
-    if (!archive) {
-        Logger::error("failed to create zip file:", outputPath, GetZipErrors(err));
-        return false;
-    }
-    ScopeGuard archiveDeleter{[&archive] {
-        if (archive) zip_close(archive);
-    }};
+namespace {
 
-    // 递归遍历 ipaDir 下的所有条目。
+/// ZIP 中央目录条目记录。
+struct ZipEntry {
+    enum class Kind { Dir, File, Symlink };
+    Kind kind{};
+    std::string name{}; ///< UTF-8 格式的归档条目名（目录以 / 结尾）。
+    std::filesystem::path filePath{}; ///< 文件类型：磁盘上的源路径。
+    std::string symlinkTarget{}; ///< 符号链接目标路径（UTF-8）。
+    std::vector<std::uint8_t> data{}; ///< 压缩后的数据（File/Symlink 已压缩；Dir 为空）。
+    std::uint32_t crc32{}; ///< CRC-32 校验和。
+    std::uint64_t uncompSize{}; ///< 未压缩大小。
+    std::uint64_t compSize{}; ///< 压缩后大小。
+    std::uint16_t method{}; ///< 0 = STORE，8 = DEFLATE。
+    std::uint64_t localHeaderOffset{}; ///< 在最终 ZIP 文件中的 local header 偏移。
+    bool prepared{}; ///< 是否已完成压缩准备。
+};
+
+/// 安全打开二进制文件，跨平台支持宽字符路径。
+static std::FILE* openBinaryRead(const std::filesystem::path& filePath) {
+#ifdef _WIN32
+    std::FILE* fp{};
+    if (_wfopen_s(&fp, filePath.wstring().c_str(), L"rb") != 0) return nullptr;
+    return fp;
+#else
+    return std::fopen(filePath.string().c_str(), "rb");
+#endif
+}
+
+/// 计算 ZIP 标准 DOS 时间字段（这里固定取一个稳定值，避免每次签名结果不一致）。
+static std::pair<std::uint16_t, std::uint16_t> dosTimeStamp() {
+    // 2026-01-01 00:00:00。
+    constexpr std::uint16_t dosDate = ((2026 - 1980) << 9) | (1 << 5) | 1;
+    constexpr std::uint16_t dosTime = 0;
+    return {dosTime, dosDate};
+}
+
+/// 使用 zlib raw deflate 将输入字节压缩为 ZIP 兼容的 deflate 流。
+static bool deflateToBuffer(const std::uint8_t* input, std::size_t inputSize, int level,
+                            std::vector<std::uint8_t>& out) {
+    z_stream zs{};
+    // windowBits = -15 表示 raw deflate（无 zlib header/trailer），正是 ZIP 所需。
+    if (deflateInit2(&zs, level, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK) return false;
+
+    out.clear();
+    out.reserve(inputSize / 2 + 128);
+
+    constexpr std::size_t chunkSize = 64 * 1024;
+    std::vector<std::uint8_t> buf(chunkSize);
+
+    zs.next_in = const_cast<Bytef*>(input);
+    zs.avail_in = static_cast<uInt>(inputSize);
+    int ret{};
+    do {
+        zs.next_out = buf.data();
+        zs.avail_out = static_cast<uInt>(buf.size());
+        ret = deflate(&zs, Z_FINISH);
+        if (ret == Z_STREAM_ERROR) {
+            deflateEnd(&zs);
+            return false;
+        }
+        auto produced = buf.size() - zs.avail_out;
+        out.insert(out.end(), buf.begin(), buf.begin() + produced);
+    } while (ret != Z_STREAM_END);
+
+    deflateEnd(&zs);
+    return true;
+}
+
+/// 串行写入工具：以二进制方式追加到输出流，跨平台支持宽字符路径。
+class ZipWriter {
+  public:
+    bool open(const std::filesystem::path& outputPath) {
+#ifdef _WIN32
+        if (_wfopen_s(&fp_, outputPath.wstring().c_str(), L"wb") != 0) return false;
+#else
+        fp_ = std::fopen(outputPath.string().c_str(), "wb");
+#endif
+        return fp_ != nullptr;
+    }
+
+    ~ZipWriter() {
+        if (fp_) std::fclose(fp_);
+    }
+
+    bool write(const void* data, std::size_t size) {
+        if (size == 0) return true;
+        auto written = std::fwrite(data, 1, size, fp_);
+        if (written != size) return false;
+        offset_ += size;
+        return true;
+    }
+
+    template <typename T> bool writeLE(T value) {
+        std::uint8_t buf[sizeof(T)];
+        for (std::size_t i = 0; i < sizeof(T); ++i) buf[i] = static_cast<std::uint8_t>(value >> (i * 8) & 0xFF);
+        return write(buf, sizeof(T));
+    }
+
+    [[nodiscard]] std::uint64_t offset() const { return offset_; }
+
+    bool close() {
+        if (!fp_) return true;
+        auto ok = std::fclose(fp_) == 0;
+        fp_ = nullptr;
+        return ok;
+    }
+
+  private:
+    std::FILE* fp_{};
+    std::uint64_t offset_{};
+};
+
+constexpr std::uint32_t LOCAL_FILE_HEADER_SIG = 0x04034b50;
+constexpr std::uint32_t CENTRAL_DIR_HEADER_SIG = 0x02014b50;
+constexpr std::uint32_t END_OF_CENTRAL_DIR_SIG = 0x06054b50;
+
+}
+
+bool Zip(const std::filesystem::path& ipaDir, const std::filesystem::path& outputPath, const int compressLevel) {
+    auto level = std::clamp(compressLevel, 0, 9);
+
+    // 第 1 步：扫描所有条目，收集元信息（不读文件内容）。
+    std::vector<ZipEntry> entries{};
     std::error_code ec{};
     for (auto&& entry : std::filesystem::recursive_directory_iterator(ipaDir, ec)) {
-        // 计算相对于 ipaDir 的相对路径，作为归档中的条目名称。
         auto relativePath = std::filesystem::relative(entry.path(), ipaDir, ec);
         if (ec) {
-            Logger::error("failed to get relative path:", entry.path().string(), ec.message());
-            zip_discard(archive);
-            archive = nullptr;
+            Logger::error("failed to get relative path:", pathToUtf8(entry.path()), ec.message());
             return false;
         }
 
-        // 将路径分隔符统一为 /（ZIP 规范要求使用正斜杠）。
-        auto entryName = relativePath.generic_string();
+        // UTF-8 归档名。
+        std::string entryName{};
+#ifdef _WIN32
+        {
+            auto wname = relativePath.generic_wstring();
+            if (!wname.empty()) {
+                auto u8len = WideCharToMultiByte(CP_UTF8, 0, wname.data(), static_cast<int>(wname.size()), nullptr, 0,
+                                                 nullptr, nullptr);
+                if (u8len > 0) {
+                    entryName.resize(static_cast<std::size_t>(u8len));
+                    WideCharToMultiByte(CP_UTF8, 0, wname.data(), static_cast<int>(wname.size()), entryName.data(),
+                                        u8len, nullptr, nullptr);
+                }
+            }
+        }
+        if (entryName.empty()) entryName = relativePath.generic_string();
+#else
+        entryName = relativePath.generic_string();
+#endif
 
-        if (entry.is_directory(ec)) {
-            // 目录条目：名称以 / 结尾。
-            auto dirName = entryName + FILE_NAME_SLASH;
-            if (zip_dir_add(archive, dirName.c_str(), ZIP_FL_ENC_GUESS) < 0) {
-                Logger::error("failed to add directory to zip:", dirName, zip_strerror(archive));
-                zip_discard(archive);
-                archive = nullptr;
-                return false;
-            }
-        } else if (entry.is_regular_file(ec)) {
-            // 文件条目：使用 zip_source_file 从磁盘读取文件内容。
-            auto source = zip_source_file(archive, entry.path().string().c_str(), 0, -1);
-            if (!source) {
-                Logger::error("failed to create zip source for file:", entry.path().string(), zip_strerror(archive));
-                zip_discard(archive);
-                archive = nullptr;
-                return false;
-            }
-
-            // 将文件添加到归档中（若同名条目已存在则替换）。
-            // 使用 ZIP_FL_ENC_GUESS 避免强制设置 UTF-8 标志位 (0x800)，
-            // 以保持与 Apple iOS IPA 使用的传统 zip 格式兼容（flags=0）。
-            auto index = zip_file_add(archive, entryName.c_str(), source, ZIP_FL_ENC_GUESS | ZIP_FL_OVERWRITE);
-            if (index < 0) {
-                Logger::error("failed to add file to zip:", entryName, zip_strerror(archive));
-                zip_source_free(source);
-                zip_discard(archive);
-                archive = nullptr;
-                return false;
-            }
-
-            // 设置压缩方法为 Deflate。
-            if (zip_set_file_compression(archive, index, ZIP_CM_DEFLATE, compressLevel) < 0) {
-                Logger::error("failed to set compression for file:", entryName, zip_strerror(archive));
-                zip_discard(archive);
-                archive = nullptr;
-                return false;
-            }
-        } else if (entry.is_symlink(ec)) {
-            // 符号链接条目：读取链接目标路径，将其作为文件内容存入归档（不压缩）。
+        ZipEntry zipEntry{};
+        zipEntry.name = std::move(entryName);
+        if (entry.is_symlink(ec)) {
+            zipEntry.kind = ZipEntry::Kind::Symlink;
             auto target = std::filesystem::read_symlink(entry.path(), ec);
             if (ec) {
-                Logger::error("failed to read symlink:", entry.path().string(), ec.message());
-                zip_discard(archive);
-                archive = nullptr;
+                Logger::error("failed to read symlink:", pathToUtf8(entry.path()), ec.message());
                 return false;
             }
+            zipEntry.symlinkTarget = pathToUtf8(target);
+        } else if (entry.is_directory(ec)) {
+            zipEntry.kind = ZipEntry::Kind::Dir;
+            if (zipEntry.name.empty() || zipEntry.name.back() != '/') zipEntry.name += '/';
+        } else if (entry.is_regular_file(ec)) {
+            zipEntry.kind = ZipEntry::Kind::File;
+            zipEntry.filePath = entry.path();
+        } else {
+            // 未知类型跳过。
+            continue;
+        }
+        entries.push_back(std::move(zipEntry));
+    }
+    if (ec) {
+        Logger::error("failed to iterate directory:", pathToUtf8(ipaDir), ec.message());
+        return false;
+    }
 
-            auto targetStr = target.generic_string();
-            auto source = zip_source_buffer(archive, targetStr.c_str(), targetStr.size(), 0);
-            if (!source) {
-                Logger::error("failed to create zip source for symlink:", entry.path().string(), zip_strerror(archive));
-                zip_discard(archive);
-                archive = nullptr;
-                return false;
-            }
-
-            auto index = zip_file_add(archive, entryName.c_str(), source, ZIP_FL_ENC_GUESS | ZIP_FL_OVERWRITE);
-            if (index < 0) {
-                Logger::error("failed to add symlink to zip:", entryName, zip_strerror(archive));
-                zip_source_free(source);
-                zip_discard(archive);
-                archive = nullptr;
-                return false;
-            }
-
-            // 符号链接不压缩，使用 STORE 方式存储。
-            if (zip_set_file_compression(archive, index, ZIP_CM_STORE, 0) < 0) {
-                Logger::error("failed to set compression for symlink:", entryName, zip_strerror(archive));
-                zip_discard(archive);
-                archive = nullptr;
-                return false;
-            }
-
-            // 设置外部属性标记为符号链接（Unix 符号链接标志 0xA0000000）。
-            if (zip_file_set_external_attributes(archive, index, 0, ZIP_OPSYS_UNIX, 0xA1FF0000) < 0) {
-                Logger::error("failed to set symlink attributes:", entryName, zip_strerror(archive));
-                zip_discard(archive);
-                archive = nullptr;
-                return false;
-            }
+    // 第 2 步：多线程并行压缩文件条目。
+    std::vector<std::size_t> compressIndices{};
+    compressIndices.reserve(entries.size());
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        auto& e = entries[i];
+        if (e.kind == ZipEntry::Kind::File) {
+            compressIndices.push_back(i);
+        } else if (e.kind == ZipEntry::Kind::Symlink) {
+            // 符号链接以 STORE 形式存储，提前完成。
+            auto& target = e.symlinkTarget;
+            e.uncompSize = target.size();
+            e.compSize = target.size();
+            e.method = 0;
+            e.crc32 = ::crc32(0L, reinterpret_cast<const Bytef*>(target.data()), static_cast<uInt>(target.size()));
+            e.data.assign(reinterpret_cast<const std::uint8_t*>(target.data()),
+                          reinterpret_cast<const std::uint8_t*>(target.data()) + target.size());
+            e.prepared = true;
+        } else {
+            // 目录。
+            e.method = 0;
+            e.prepared = true;
         }
     }
 
-    if (ec) {
-        Logger::error("failed to iterate directory:", ipaDir.string(), ec.message());
-        zip_discard(archive);
-        archive = nullptr;
-        return false;
+    if (!compressIndices.empty()) {
+        auto cpuCores = std::thread::hardware_concurrency();
+        auto threadCount =
+            std::max(1u, std::min(cpuCores > 0 ? cpuCores : 4u, static_cast<unsigned>(compressIndices.size())));
+
+        std::atomic<std::size_t> nextTask{};
+        std::atomic<bool> hasError{};
+        std::mutex errorMutex{};
+        std::string errorMsg{};
+
+        auto worker = [&] {
+            while (!hasError.load(std::memory_order_acquire)) {
+                auto idx = nextTask.fetch_add(1, std::memory_order_relaxed);
+                if (idx >= compressIndices.size()) break;
+                auto& e = entries[compressIndices[idx]];
+
+                // 读取整个文件到内存。
+                auto fp = openBinaryRead(e.filePath);
+                if (!fp) {
+                    std::lock_guard lock(errorMutex);
+                    errorMsg = "failed to open file: " + pathToUtf8(e.filePath);
+                    hasError.store(true, std::memory_order_release);
+                    return;
+                }
+                ScopeGuard fpGuard{[&fp] { std::fclose(fp); }};
+
+                std::error_code fec{};
+                auto fileSize = std::filesystem::file_size(e.filePath, fec);
+                if (fec) {
+                    std::lock_guard lock(errorMutex);
+                    errorMsg = "failed to stat file: " + pathToUtf8(e.filePath) + " " + fec.message();
+                    hasError.store(true, std::memory_order_release);
+                    return;
+                }
+
+                std::vector<std::uint8_t> raw(static_cast<std::size_t>(fileSize));
+                if (fileSize > 0) {
+                    auto readBytes = std::fread(raw.data(), 1, raw.size(), fp);
+                    if (readBytes != raw.size()) {
+                        std::lock_guard lock(errorMutex);
+                        errorMsg = "failed to read file: " + pathToUtf8(e.filePath);
+                        hasError.store(true, std::memory_order_release);
+                        return;
+                    }
+                }
+
+                // 计算 CRC-32。
+                e.crc32 = ::crc32(0L, raw.data(), static_cast<uInt>(raw.size()));
+                e.uncompSize = raw.size();
+
+                if (level == 0 || raw.empty()) {
+                    e.method = 0;
+                    e.data = std::move(raw);
+                    e.compSize = e.data.size();
+                } else {
+                    e.method = 8;
+                    if (!deflateToBuffer(raw.data(), raw.size(), level, e.data)) {
+                        std::lock_guard lock(errorMutex);
+                        errorMsg = "deflate failed: " + pathToUtf8(e.filePath);
+                        hasError.store(true, std::memory_order_release);
+                        return;
+                    }
+                    e.compSize = e.data.size();
+                }
+                e.prepared = true;
+            }
+        };
+
+        std::vector<std::thread> threads{};
+        threads.reserve(threadCount);
+        for (unsigned t = 0; t < threadCount; ++t) threads.emplace_back(worker);
+        for (auto& th : threads) th.join();
+
+        if (hasError.load()) {
+            Logger::error(errorMsg);
+            return false;
+        }
     }
 
-    // zip_close 会将归档写入磁盘。成功后将 archive 置空，避免 ScopeGuard 重复关闭。
-    if (zip_close(archive) < 0) {
-        Logger::error("failed to write zip file:", outputPath, zip_strerror(archive));
-        zip_discard(archive);
-        archive = nullptr;
+    // 第 3 步：串行写入 ZIP 流（local file headers + 数据）。
+    ZipWriter writer{};
+    if (!writer.open(outputPath)) {
+        Logger::error("failed to create zip file:", pathToUtf8(outputPath));
         return false;
     }
-    archive = nullptr;
+    ScopeGuard writerGuard{[&writer, &outputPath] {
+        if (writer.offset() == 0) {
+            writer.close();
+            std::error_code rec{};
+            std::filesystem::remove(outputPath, rec);
+        }
+    }};
+
+    auto [dosTime, dosDate] = dosTimeStamp();
+
+    auto writeEntry = [&](ZipEntry& e) -> bool {
+        e.localHeaderOffset = writer.offset();
+
+        // local file header。
+        if (!writer.writeLE<std::uint32_t>(LOCAL_FILE_HEADER_SIG)) return false;
+        if (!writer.writeLE<std::uint16_t>(20)) return false; // version needed
+        if (!writer.writeLE<std::uint16_t>(0)) return false; // flags（不含 UTF-8 标志，保持兼容性）
+        if (!writer.writeLE<std::uint16_t>(e.method)) return false;
+        if (!writer.writeLE<std::uint16_t>(dosTime)) return false;
+        if (!writer.writeLE<std::uint16_t>(dosDate)) return false;
+        if (!writer.writeLE<std::uint32_t>(e.crc32)) return false;
+        if (!writer.writeLE<std::uint32_t>(static_cast<std::uint32_t>(e.compSize))) return false;
+        if (!writer.writeLE<std::uint32_t>(static_cast<std::uint32_t>(e.uncompSize))) return false;
+        if (!writer.writeLE<std::uint16_t>(static_cast<std::uint16_t>(e.name.size()))) return false;
+        if (!writer.writeLE<std::uint16_t>(0)) return false; // extra length
+        if (!writer.write(e.name.data(), e.name.size())) return false;
+        if (!e.data.empty() && !writer.write(e.data.data(), e.data.size())) return false;
+        return true;
+    };
+
+    for (auto& e : entries) {
+        if (!writeEntry(e)) {
+            Logger::error("failed to write zip entry:", e.name);
+            return false;
+        }
+    }
+
+    // 第 4 步：写入 central directory。
+    auto centralDirOffset = writer.offset();
+    for (auto& e : entries) {
+        if (!writer.writeLE<std::uint32_t>(CENTRAL_DIR_HEADER_SIG)) return false;
+        // version made by: 0x031E = Unix 3.0 (与 iOS IPA 习惯一致)。
+        if (!writer.writeLE<std::uint16_t>(0x031E)) return false;
+        if (!writer.writeLE<std::uint16_t>(20)) return false; // version needed
+        if (!writer.writeLE<std::uint16_t>(0)) return false; // flags
+        if (!writer.writeLE<std::uint16_t>(e.method)) return false;
+        if (!writer.writeLE<std::uint16_t>(dosTime)) return false;
+        if (!writer.writeLE<std::uint16_t>(dosDate)) return false;
+        if (!writer.writeLE<std::uint32_t>(e.crc32)) return false;
+        if (!writer.writeLE<std::uint32_t>(static_cast<std::uint32_t>(e.compSize))) return false;
+        if (!writer.writeLE<std::uint32_t>(static_cast<std::uint32_t>(e.uncompSize))) return false;
+        if (!writer.writeLE<std::uint16_t>(static_cast<std::uint16_t>(e.name.size()))) return false;
+        if (!writer.writeLE<std::uint16_t>(0)) return false; // extra length
+        if (!writer.writeLE<std::uint16_t>(0)) return false; // comment length
+        if (!writer.writeLE<std::uint16_t>(0)) return false; // disk number
+        if (!writer.writeLE<std::uint16_t>(0)) return false; // internal file attrs
+        // 外部属性：目录 = 0x41ED0010（drwxr-xr-x + DOS dir bit），
+        // 符号链接 = 0xA1ED0000（lrwxr-xr-x），文件 = 0x81A40000（-rw-r--r--）。
+        std::uint32_t extAttr = 0x81A40000u;
+        if (e.kind == ZipEntry::Kind::Dir)
+            extAttr = 0x41ED0010u;
+        else if (e.kind == ZipEntry::Kind::Symlink)
+            extAttr = 0xA1ED0000u;
+        if (!writer.writeLE<std::uint32_t>(extAttr)) return false;
+        if (!writer.writeLE<std::uint32_t>(static_cast<std::uint32_t>(e.localHeaderOffset))) return false;
+        if (!writer.write(e.name.data(), e.name.size())) return false;
+    }
+    auto centralDirEnd = writer.offset();
+    auto centralDirSize = centralDirEnd - centralDirOffset;
+
+    // 第 5 步：写入 EOCD。
+    if (!writer.writeLE<std::uint32_t>(END_OF_CENTRAL_DIR_SIG)) return false;
+    if (!writer.writeLE<std::uint16_t>(0)) return false; // disk number
+    if (!writer.writeLE<std::uint16_t>(0)) return false; // disk start
+    if (!writer.writeLE<std::uint16_t>(static_cast<std::uint16_t>(entries.size()))) return false;
+    if (!writer.writeLE<std::uint16_t>(static_cast<std::uint16_t>(entries.size()))) return false;
+    if (!writer.writeLE<std::uint32_t>(static_cast<std::uint32_t>(centralDirSize))) return false;
+    if (!writer.writeLE<std::uint32_t>(static_cast<std::uint32_t>(centralDirOffset))) return false;
+    if (!writer.writeLE<std::uint16_t>(0)) return false; // comment length
+
+    if (!writer.close()) {
+        Logger::error("failed to close zip file:", pathToUtf8(outputPath));
+        return false;
+    }
 
     return true;
 }

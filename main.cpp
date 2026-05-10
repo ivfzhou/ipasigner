@@ -23,6 +23,7 @@
 #endif
 #include <cstdlib>
 
+#include "Logger.tpp"
 #include "constants.hpp"
 #include "do_sign.hpp"
 
@@ -43,6 +44,9 @@ int main(const int argc, const char* argv[]) {
     // 解析命令行参数。
     auto opts = ipasigner::ParseCommandFlags(argc, argv);
     if (!opts) std::exit(ipasigner::EXIT_CODE_PARSE_OPTIONS_ERROR);
+
+    // 根据命令行参数设置日志详细程度。
+    ipasigner::Logger::setVerbose(opts->verbose);
 
     // 执行签名。
     if (opts->sign) std::exit(ipasigner::DoSign(*opts));

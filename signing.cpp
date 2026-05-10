@@ -687,7 +687,7 @@ static bool signSingleArch(std::string& data, const std::uint32_t archOffset, co
 
     // 空间不足：扩展 __LINKEDIT 并重建文件。
     if (static_cast<std::int64_t>(length) - codeLength < static_cast<std::int64_t>(blob.size())) {
-        Logger::warn("CodeSignature space insufficient, expanding file");
+        Logger::debug("CodeSignature space insufficient, expanding file");
         if (!linkEditSeg) {
             Logger::error("cannot find __LINKEDIT segment to expand");
             return false;
@@ -780,9 +780,9 @@ static bool injectDyLibSingleArch(uint8_t* base, const std::string_view dylibPat
                 std::strcmp(existPath, dylibPath.data()) == 0) {
                 if (auto wantCmd = weakInject ? LC_LOAD_WEAK_DYLIB_VAL : LC_LOAD_DYLIB_VAL; cmd != wantCmd) {
                     dlc->cmd = BO(wantCmd);
-                    Logger::info("changed dylib load type for:", dylibPath);
+                    Logger::debug("changed dylib load type for:", dylibPath);
                 } else {
-                    Logger::warn("dylib already exists:", dylibPath);
+                    Logger::debug("dylib already exists:", dylibPath);
                 }
                 return true;
             }

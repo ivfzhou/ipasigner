@@ -96,7 +96,7 @@ bool ValidateYAMLConfiguration(Configuration& cfg) {
             Logger::error("destination ipa file is a directory:", cfg.destinationIpaFilePath);
             return false;
         }
-        Logger::warn("destination ipa file exists, will overwrite the file:", cfg.destinationIpaFilePath);
+        Logger::debug("destination ipa file exists, will overwrite the file:", cfg.destinationIpaFilePath);
     }
 
     // 校验证书文件是否存在。

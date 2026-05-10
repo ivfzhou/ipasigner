@@ -41,9 +41,19 @@ namespace gitee::com::ivfzhou::ipasigner {
  * @brief 日志工具类，提供静态方法输出带时间戳的日志。
  *
  * 所有方法均为静态方法，无需实例化。日志输出到 std::cout。
+ * 默认 DEBUG 级别日志被抑制，可通过 SetVerbose(true) 启用。
  */
 class Logger final {
   public:
+    /// 是否启用详细输出（DEBUG 日志）。默认关闭。
+    static bool& verbose() {
+        static bool v = false;
+        return v;
+    }
+
+    /// 启用/关闭 DEBUG 级别日志输出。
+    static void setVerbose(bool v) { verbose() = v; }
+
     /// 输出 INFO 级别日志。
     template <typename... T> static void info(T&&... args) { println(std::cout, LEVEL_INFO, std::forward<T>(args)...); }
 
@@ -70,14 +80,42 @@ class Logger final {
         println(std::cout, LEVEL_ERROR, std::vformat(fmt, std::make_format_args(std::forward<T>(args)...)));
     }
 
-    /// 输出 DEBUG 级别日志。
+    /// 输出 DEBUG 级别日志（仅在 verbose 启用时输出）。
     template <typename... T> static void debug(T&&... args) {
+        if (!verbose()) return;
         println(std::cout, LEVEL_DEBUG, std::forward<T>(args)...);
     }
 
-    /// 输出 DEBUG 级别日志。
+    /// 输出 DEBUG 级别日志（仅在 verbose 启用时输出）。
     template <typename... T> static void debugf(const std::string_view& fmt, T&&... args) {
+        if (!verbose()) return;
         println(std::cout, LEVEL_DEBUG, std::vformat(fmt, std::make_format_args(std::forward<T>(args)...)));
+    }
+
+    /**
+     * @brief 输出阶段分隔标题（不带日志前缀，用于美化阶段输出）。
+     * @param title 阶段标题文本。
+     */
+    static void section(std::string_view title) {
+        std::cout << '\n';
+        std::cout << "========== " << title << " ==========" << '\n';
+    }
+
+    /**
+     * @brief 输出原始一行（不带时间戳和日志级别前缀）。
+     *
+     * 用于阶段中需要美化的多行结构化信息（如配置项列表、签名文件列表）。
+     * @param line 一行文本内容。
+     */
+    static void plain(std::string_view line) { std::cout << line << '\n'; }
+
+    /**
+     * @brief 以「键: 值」格式输出一项配置信息（左侧键名按 keyWidth 右填充对齐）。
+     */
+    static void item(std::string_view key, std::string_view value, std::size_t keyWidth = 24) {
+        std::string padded(key);
+        if (padded.size() < keyWidth) padded.append(keyWidth - padded.size(), ' ');
+        std::cout << "  " << padded << value << '\n';
     }
 
     /**

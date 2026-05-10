@@ -28,6 +28,7 @@
  * 每个步骤封装为独立的 static 函数，通过返回退出码指示成功或失败。
  */
 
+#include <chrono>
 #include <filesystem>
 #include <format>
 #include <set>
@@ -58,12 +59,12 @@ namespace gitee::com::ivfzhou::ipasigner {
  */
 static int getYAMLConfiguration(Configuration& cfg, const std::string& filePath) {
     // 解析 yaml 配置文件。
-    Logger::info("parse yaml configuration file:", filePath);
+    Logger::debug("parse yaml configuration file:", filePath);
     auto cfgOpt = ParseYAMLConfiguration(filePath);
     if (!cfgOpt) return EXIT_CODE_PARSE_CONFIGURATION_ERROR;
 
     // 校验 yaml 配置文件。
-    Logger::info("verify configuration file");
+    Logger::debug("verify configuration file");
     if (!ValidateYAMLConfiguration(*cfgOpt)) return EXIT_CODE_VALIDATE_CONFIGURATION_ERROR;
 
     cfg = std::move(*cfgOpt);
@@ -78,7 +79,7 @@ static int getYAMLConfiguration(Configuration& cfg, const std::string& filePath)
  */
 static int readProvisionFile(std::string& provision, const std::string& filePath) {
     // 读取描述文件。
-    Logger::info("read mobile provision file:", filePath);
+    Logger::debug("read mobile provision file:", filePath);
     auto provisionDataOpt = ReadFile(filePath);
     if (!provisionDataOpt) {
         Logger::error("failed to read provision file:", filePath);
@@ -97,7 +98,7 @@ static int readProvisionFile(std::string& provision, const std::string& filePath
  */
 static int getProvisionPList(std::string& plist, const std::string& provision) {
     // 获取描述文件的 plist 内容。
-    Logger::info("get provision plist data");
+    Logger::debug("get provision plist data");
     auto cmsContentOpt = GetCMSFromProvision(provision);
     if (!cmsContentOpt) {
         Logger::error("failed to get plist data from provision");
@@ -116,7 +117,7 @@ static int getProvisionPList(std::string& plist, const std::string& provision) {
  */
 static int getTeamIdFromPList(std::string& teamId, const std::string& plist) {
     // 获取 teamId。
-    Logger::info("get team id from plist");
+    Logger::debug("get team id from plist");
     auto teamIdsOpt = GetPListArrayString(plist, PLIST_KEY_TEAM_IDENTIFIER);
     if (!teamIdsOpt || teamIdsOpt->empty()) {
         Logger::error("team id not found in plist");
@@ -127,7 +128,7 @@ static int getTeamIdFromPList(std::string& teamId, const std::string& plist) {
         Logger::error("team id is empty");
         return EXIT_CODE_TEAM_ID_NOT_FOUND;
     }
-    Logger::info("team id is", teamId);
+    Logger::debug("team id is", teamId);
 
     return 0;
 }
@@ -153,7 +154,7 @@ static int getPListEntitlements(std::string& plistEntitlements, const std::strin
                                 const std::vector<std::string>& keychainGroups,
                                 const std::vector<std::string>& securityGroups) {
     // 获取能力项信息。
-    Logger::info("get entitlements from plist");
+    Logger::debug("get entitlements from plist");
     auto plistEntitlementsOpt = GetPListXMLValue(plist, PLIST_KEY_ENTITLEMENTS);
     if (!plistEntitlementsOpt) {
         Logger::error("plist entitlements not found in plist:", plist);
@@ -166,7 +167,7 @@ static int getPListEntitlements(std::string& plistEntitlements, const std::strin
         return 0;
 
     // 添加 universal link。
-    Logger::info("update plist entitlements");
+    Logger::debug("update plist entitlements");
     auto plistTmp = WrapperPListXMLTag(plistEntitlements);
     if (auto list = MergeList(universalLinkDomains, associatedDomains);
         !list.empty() && !SetPListArrayString(plistTmp, PLIST_KEY_ASSOCIATED_DOMAINS, list)) {
@@ -197,7 +198,7 @@ static int getPListEntitlements(std::string& plistEntitlements, const std::strin
 static int parseCertificate(std::pair<EvpPkeyPtr, X509Ptr>& certificate, const std::string& filePath,
                             const std::string& password, const std::string& plist) {
     // 读取证书文件。
-    Logger::info("read certificate file:", filePath);
+    Logger::debug("read certificate file:", filePath);
     auto certificateDataOpt = ReadFile(filePath);
     if (!certificateDataOpt) {
         Logger::error("failed to read certificate file:", filePath);
@@ -205,12 +206,12 @@ static int parseCertificate(std::pair<EvpPkeyPtr, X509Ptr>& certificate, const s
     }
 
     // 获取 plist 中的证书数据。
-    Logger::info("get certificates from plist");
+    Logger::debug("get certificates from plist");
     auto plistCertificatesOpt = GetPListArrayString(plist, PLIST_KEY_DEVELOPER_CERTIFICATES);
-    Logger::info("plist certificates number", plistCertificatesOpt ? plistCertificatesOpt->size() : 0);
+    Logger::debug("plist certificates number", plistCertificatesOpt ? plistCertificatesOpt->size() : 0);
 
     // 解析证书。
-    Logger::info("parse certificates");
+    Logger::debug("parse certificates");
     auto plistCertificates = plistCertificatesOpt ? *plistCertificatesOpt : std::vector<std::string>{};
     auto certificateOpt = ParseCertificate(*certificateDataOpt, password, plistCertificates);
     if (!certificateOpt) {
@@ -230,13 +231,13 @@ static int parseCertificate(std::pair<EvpPkeyPtr, X509Ptr>& certificate, const s
  */
 static int getCertificateName(std::string& certificateName, const std::pair<EvpPkeyPtr, X509Ptr>& certificate) {
     // 提取证书的通用名称（Common Name），后续可能用于签名标记或日志。
-    Logger::info("get certificate common name");
+    Logger::debug("get certificate common name");
     auto subjectOpt = GetCommonNameFromCertificate(certificate.second.get());
     if (!subjectOpt) {
         Logger::error("failed to get certificate common name");
         return EXIT_CODE_PARSE_CERTIFICATE_ERROR;
     }
-    Logger::info("certificate common name is", *subjectOpt);
+    Logger::debug("certificate common name is", *subjectOpt);
 
     certificateName = std::move(*subjectOpt);
     return 0;
@@ -251,7 +252,7 @@ static int getCertificateName(std::string& certificateName, const std::pair<EvpP
 static int readAppxProvisionFile(std::map<std::string, std::string>& appxProvisions,
                                  const std::map<std::string, std::string>& appNameToFilePath) {
     // 读取描述文件。
-    Logger::info("get appx provisions");
+    Logger::debug("get appx provisions");
     for (auto&& [key, value] : appNameToFilePath) {
         auto fileDataOpt = ReadFile(value);
         if (!fileDataOpt) {
@@ -273,7 +274,7 @@ static int readAppxProvisionFile(std::map<std::string, std::string>& appxProvisi
 static int getAppxProvisionBundleIds(std::map<std::string, std::string>& appxProvisionBundleIds,
                                      const std::map<std::string, std::string>& appxProvisions) {
     // 获取描述文件的 bundle。
-    Logger::info("get appx provision bundles");
+    Logger::debug("get appx provision bundles");
     for (auto&& [key, value] : appxProvisions) {
         auto plistOpt = GetCMSFromProvision(value);
         if (!plistOpt) {
@@ -290,7 +291,7 @@ static int getAppxProvisionBundleIds(std::map<std::string, std::string>& appxPro
             Logger::error("failed to get bundle:", key);
             return EXIT_CODE_BUNDLE_NOT_FOUND;
         }
-        Logger::info("appx is", key, "bundle id is", *bundleIdOpt);
+        Logger::debug("appx is", key, "bundle id is", *bundleIdOpt);
         appxProvisionBundleIds[key] = std::move(*bundleIdOpt);
     }
 
@@ -316,7 +317,7 @@ static int unzipIPAFile(std::filesystem::path& ipaDir, const std::string& filePa
     }
 
     // 解压 ipa 文件。
-    Logger::info("ipa extracted to", ipaDir.string());
+    Logger::debug("ipa extracted to", ipaDir.string());
     if (!Unzip(filePath, ipaDir)) {
         Logger::error("failed to extract ipa file:", filePath);
         return EXIT_CODE_READ_FILE_ERROR;
@@ -338,7 +339,7 @@ static int findAppDir(std::filesystem::path& appDir, const std::filesystem::path
         Logger::error(".app folder not found in directory:", ipaDir.string());
         return EXIT_CODE_READ_FILE_ERROR;
     }
-    Logger::info("found .app directory:", appDirOpt->string());
+    Logger::debug("found .app directory:", appDirOpt->string());
 
     appDir = std::move(*appDirOpt);
     return 0;
@@ -368,7 +369,7 @@ static int updateBundleIdIfNeed(const std::string& bundleId, const std::filesyst
                                 const std::vector<std::string>& removePlistStringKey) {
     if (bundleId.empty()) return 0;
 
-    Logger::info("modify bundle id:", bundleId);
+    Logger::debug("modify bundle id:", bundleId);
 
     // 获取 plist。
     auto plistOpt = ReadPListAsXML(appDir / FILE_NAME_PLIST);
@@ -401,7 +402,7 @@ static int updateBundleIdIfNeed(const std::string& bundleId, const std::filesyst
 
     // 修改插件的 bundle id。
     for (auto&& pluginAppDir : *pluginAppDirsOpt) {
-        Logger::info("found plugin directory:", pluginAppDir.string());
+        Logger::debug("found plugin directory:", pluginAppDir.string());
 
         auto pluginAppPlistOpt = ReadPListAsXML(pluginAppDir / FILE_NAME_PLIST);
         if (!pluginAppPlistOpt) {
@@ -611,7 +612,7 @@ static int updateZhLocaleFile(const std::string& bundleName, const std::filesyst
     // 读取文件。
     auto plistOpt = ReadPListAsXML(appDir / FILE_PATH_IPA_ZH_LOCALE);
     if (!plistOpt) {
-        Logger::warn("no", FILE_PATH_IPA_ZH_LOCALE, "found");
+        Logger::debug("no", FILE_PATH_IPA_ZH_LOCALE, "found");
         return 0;
     }
     auto plist = std::move(*plistOpt);
@@ -647,7 +648,7 @@ static int updateNewZhLocaleFile(const std::string& bundleName, const std::files
     // 读取文件。
     auto plistOpt = ReadPListAsXML(appDir / FILE_PATH_NEW_IPA_ZH_LOCALE);
     if (!plistOpt) {
-        Logger::warn("no", FILE_PATH_NEW_IPA_ZH_LOCALE, "found");
+        Logger::debug("no", FILE_PATH_NEW_IPA_ZH_LOCALE, "found");
         return 0;
     }
     auto plist = std::move(*plistOpt);
@@ -718,7 +719,7 @@ static int createAdditionFile(const std::filesystem::path& appDir, const std::st
                               const std::string& additionFileData) {
     if (additionFileName.empty() || additionFileData.empty()) return 0;
 
-    Logger::info("create additional file:", (appDir / additionFileName).string());
+    Logger::debug("create additional file:", (appDir / additionFileName).string());
 
     // 判断文件不存在，避免覆盖已有的文件。
     if (std::filesystem::exists(appDir / additionFileName)) {
@@ -746,7 +747,7 @@ static int writeDylibFileIfNeed(std::string& dylibPath, const std::filesystem::p
                                 const std::string& dylibFilePath) {
     if (dylibFilePath.empty()) return 0;
 
-    Logger::info("write dylib file to .app folder:", dylibFilePath);
+    Logger::debug("write dylib file to .app folder:", dylibFilePath);
 
     // 检测原文件存在。
     auto dylibFilePath2 = std::filesystem::path(dylibFilePath);
@@ -759,7 +760,7 @@ static int writeDylibFileIfNeed(std::string& dylibPath, const std::filesystem::p
     auto fileName = std::filesystem::path(dylibFilePath).filename().string();
     auto destFilePath = appDir / fileName;
     if (std::filesystem::exists(destFilePath))
-        Logger::info("file exists, will be over write file:", destFilePath.string());
+        Logger::debug("file exists, will be over write file:", destFilePath.string());
 
     // 复制文件到 .app 目录下。
     std::error_code ec;
@@ -1097,6 +1098,17 @@ static int generateCodeResources(std::string& codeResources, const std::filesyst
 }
 
 /**
+ * @brief 计算签名树中需要签名的可执行文件总数（含 dylib + 主可执行文件）。
+ * @param signInfo 签名树根节点。
+ * @return 待签名条目总数。
+ */
+static std::size_t countSignTargets(const SignInfo& signInfo) {
+    std::size_t count = signInfo.files.size() + 1; // dylib 数量 + 当前组件主可执行文件。
+    for (auto&& v : signInfo.folders) count += countSignTargets(v);
+    return count;
+}
+
+/**
  * @brief 递归执行代码签名。
  *
  * 先递归签名所有子组件，然后签名当前组件的 .dylib 文件和可执行文件。
@@ -1105,11 +1117,14 @@ static int generateCodeResources(std::string& codeResources, const std::filesyst
  * @param signInfo 当前组件的签名信息。
  * @param signAsset 签名资产（证书、描述文件等）。
  * @param rootAppDir 根 .app 目录路径。
+ * @param current 已签名的条目计数（递归过程中累加）。
+ * @param total 需要签名的条目总数。
  * @return 0 表示成功，非 0 表示失败的退出码。
  */
-static int signFiles(const SignInfo& signInfo, const SignAsset& signAsset, const std::filesystem::path& rootAppDir) {
+static int signFilesImpl(const SignInfo& signInfo, const SignAsset& signAsset, const std::filesystem::path& rootAppDir,
+                         std::size_t& current, std::size_t total) {
     for (auto&& v : signInfo.folders)
-        if (auto code = signFiles(v, signAsset, rootAppDir)) return code;
+        if (auto code = signFilesImpl(v, signAsset, rootAppDir, current, total)) return code;
 
     auto dir = signInfo.path;
     if (dir == FILE_NAME_SLASH) {
@@ -1122,14 +1137,24 @@ static int signFiles(const SignInfo& signInfo, const SignAsset& signAsset, const
 
     // 签名独立 dylib 文件。
     for (auto&& v : signInfo.files) {
-        Logger::info("sign dylib file:", v);
+        ++current;
         auto dylibPath = rootAppDir / v;
+        // 检测格式，若不是可签名 Mach-O（如静态归档或损坏文件），打印警告并跳过。
+        // 这样不会因个别异常文件中断整个签名流程，最终仅依赖 CodeResources 摘要。
+        auto fmt = DetectBinaryFormat(dylibPath);
+        if (!IsSignableMachO(fmt)) {
+            const char* reason = IsStaticArchive(fmt) ? "static archive" : "not a valid Mach-O";
+            Logger::plain(std::format("  [{}/{}] skip dylib       : {} (reason: {})", current, total, v, reason));
+            continue;
+        }
+        Logger::plain(std::format("  [{}/{}] sign dylib       : {}", current, total, v));
         // 传入 teamId 与 subjectCN，避免因空值导致 dylib 未被签名。
         // bundleId 为空时，SignMachOFile 内部会从 dylib 的 __info_plist 派生或回退为文件名。
         if (!SignMachOFile(dylibPath, signAsset.certificate.second.get(), signAsset.certificate.first.get(), "",
                            signAsset.teamId, signAsset.certificateName, "", "", "", "")) {
-            Logger::error("failed to sign dylib file:", v);
-            return EXIT_CODE_SIGN_ERROR;
+            Logger::warn("failed to sign dylib file (skipped):", v);
+            // 不中断流程，依赖最终 CodeResources 摘要保证整体可验证。
+            continue;
         }
     }
 
@@ -1141,6 +1166,25 @@ static int signFiles(const SignInfo& signInfo, const SignAsset& signAsset, const
     if (signInfo.path.ends_with(FILE_NAME_SUFFIX_FRAMEWORK)) {
         if (!WriteFile(baseDir / FILE_NAME_EMBEDDED_MOBILEPROVISION, signAsset.provision))
             Logger::error("failed to write provision file:", baseDir / FILE_NAME_EMBEDDED_MOBILEPROVISION);
+    }
+
+    // 检测 framework / appex 可执行文件格式：
+    //   - 若是静态归档（!<arch>\n）：跳过 Mach-O 重签，但仍生成 CodeResources，将其作为资源签名。
+    //   - 若是其它未知格式：在 framework 节点下也跳过签名（容错）。
+    bool skipExecutableSign = false;
+    if (!signInfo.execute.empty() && signInfo.path != FILE_NAME_SLASH) {
+        auto fmt = DetectBinaryFormat(executableFilePath);
+        if (IsStaticArchive(fmt)) {
+            Logger::warn(std::format("detected embedded static framework: {}/{} (header: !<arch>\\n). "
+                                     "skip Mach-O re-signing; only include in CodeResources. "
+                                     "see Apple TN2435: 'Embedding Frameworks In An App'.",
+                                     signInfo.path, signInfo.execute));
+            skipExecutableSign = true;
+        } else if (fmt == BinaryFormat::Unknown) {
+            Logger::warn(std::format("framework executable is not a recognised Mach-O, skip signing: {}/{}",
+                                     signInfo.path, signInfo.execute));
+            skipExecutableSign = true;
+        }
     }
 
     // 生成 CodeResources。
@@ -1174,7 +1218,8 @@ static int signFiles(const SignInfo& signInfo, const SignAsset& signAsset, const
 
     // 在根节点签名前注入 dylib。
     if (signInfo.path == FILE_NAME_SLASH && !signAsset.dylibPath.empty()) {
-        Logger::info("inject dylib:", signAsset.dylibPath, "weak:", signAsset.weakInject);
+        Logger::plain(std::format("  [--] inject dylib    : {} (weak: {})", signAsset.dylibPath,
+                                  signAsset.weakInject ? "true" : "false"));
         if (!InjectDyLib(executableFilePath, signAsset.dylibPath, signAsset.weakInject)) {
             Logger::error("failed to inject dylib into:", executableFilePath.string());
             return EXIT_CODE_SIGN_ERROR;
@@ -1182,15 +1227,32 @@ static int signFiles(const SignInfo& signInfo, const SignAsset& signAsset, const
     }
 
     // 签名主可执行文件。
-    Logger::info("sign executable:", executableFilePath.string());
+    ++current;
+    auto label = signInfo.path == FILE_NAME_SLASH ? std::string("main executable") : signInfo.path;
+    if (skipExecutableSign) {
+        Logger::plain(std::format("  [{}/{}] skip executable  : {} (kept as resource)", current, total, label));
+        return 0;
+    }
+    Logger::plain(std::format("  [{}/{}] sign executable  : {}", current, total, label));
     if (!SignMachOFile(executableFilePath, signAsset.certificate.second.get(), signAsset.certificate.first.get(),
                        signInfo.bundleId, signAsset.teamId, signAsset.certificateName, signAsset.plistEntitlements,
                        infoPlistSHA1, infoPlistSHA256, codeResData)) {
-        Logger::error("failed to sign executable:", executableFilePath.string());
-        return EXIT_CODE_SIGN_ERROR;
+        // 子组件签名失败时降级为警告并继续，仅当主可执行（根节点）签名失败时才致命。
+        if (signInfo.path == FILE_NAME_SLASH) {
+            Logger::error("failed to sign main executable:", executableFilePath.string());
+            return EXIT_CODE_SIGN_ERROR;
+        }
+        Logger::warn(std::format("failed to sign executable (skipped): {}", label));
     }
 
     return 0;
+}
+
+/// 兼容原签名入口的薄封装。
+static int signFiles(const SignInfo& signInfo, const SignAsset& signAsset, const std::filesystem::path& rootAppDir) {
+    std::size_t current = 0;
+    auto total = countSignTargets(signInfo);
+    return signFilesImpl(signInfo, signAsset, rootAppDir, current, total);
 }
 
 /**
@@ -1218,104 +1280,217 @@ static int packageIPA(const std::filesystem::path& ipaDir, const std::filesystem
  * @param ipaDir 要删除的临时解压目录路径。
  */
 static void removeIpaDir(const std::filesystem::path& ipaDir) {
-    Logger::info("remove ipa temporary directory:", ipaDir.string());
+    Logger::debug("remove ipa temporary directory:", ipaDir.string());
     std::filesystem::remove_all(ipaDir);
+}
+
+/**
+ * @brief 打印阶段 1 的配置项摘要（来源于 YAML 配置）。
+ */
+static void printConfigurationSummary(const Configuration& cfg, const std::string& configFilePath) {
+    Logger::section("Stage 1: Configuration");
+    Logger::plain("[YAML]");
+    Logger::item("config file:", configFilePath);
+    Logger::item("source ipa:", cfg.ipaFilePath);
+    Logger::item("output ipa:", cfg.destinationIpaFilePath);
+    Logger::item("certificate:", cfg.certificateFilePath);
+    Logger::item("mobile provision:", cfg.mobileProvisionFilePath);
+    if (!cfg.dylibFilePath.empty())
+        Logger::item("inject dylib:",
+                     std::format("{} (weak: {})", cfg.dylibFilePath, cfg.weakInject ? "true" : "false"));
+    if (!cfg.newBundleId.empty()) Logger::item("new bundle id:", cfg.newBundleId);
+    if (!cfg.newBundleName.empty()) Logger::item("new bundle name:", cfg.newBundleName);
+    if (!cfg.newBundleVersion.empty()) Logger::item("new bundle version:", cfg.newBundleVersion);
+    if (!cfg.additionalFileName.empty())
+        Logger::item("additional file:",
+                     std::format("{} ({} bytes)", cfg.additionalFileName, cfg.additionalFileData.size()));
+    Logger::item("zip level:", std::to_string(cfg.zipLevel));
+
+    auto printList = [](const char* label, const std::vector<std::string>& list) {
+        if (list.empty()) return;
+        Logger::item(label, std::format("({} items)", list.size()));
+        for (auto&& v : list) Logger::plain(std::format("    - {}", v));
+    };
+    printList("universal links:", cfg.universalLinkDomains);
+    printList("associated domains:", cfg.associatedDomains);
+    printList("keychain groups:", cfg.keychainGroups);
+    printList("security groups:", cfg.securityGroups);
+
+    if (!cfg.appxProvisions.empty()) {
+        Logger::item("appx provisions:", std::format("({} entries)", cfg.appxProvisions.size()));
+        for (auto&& [name, path] : cfg.appxProvisions) Logger::plain(std::format("    - {}: {}", name, path));
+    }
+    if (!cfg.addPlistStringKey.empty()) {
+        Logger::item("plist add keys:", std::format("({} entries)", cfg.addPlistStringKey.size()));
+        for (auto&& [k, v] : cfg.addPlistStringKey) Logger::plain(std::format("    - {} = {}", k, v));
+    }
+    if (!cfg.removePlistStringKey.empty()) {
+        Logger::item("plist remove keys:", std::format("({} entries)", cfg.removePlistStringKey.size()));
+        for (auto&& v : cfg.removePlistStringKey) Logger::plain(std::format("    - {}", v));
+    }
+}
+
+/**
+ * @brief 打印阶段 1 的证书与描述文件信息摘要。
+ */
+static void printSignAssetSummary(const SignAsset& signAsset) {
+    Logger::plain("");
+    Logger::plain("[Certificate & Provision]");
+    Logger::item("subject CN:", signAsset.certificateName);
+    Logger::item("team id:", signAsset.teamId);
+    Logger::item("provision size:", std::format("{} bytes", signAsset.provision.size()));
+    if (!signAsset.appxProvisionBundleIds.empty()) {
+        Logger::item("appx bundle ids:", std::format("({} entries)", signAsset.appxProvisionBundleIds.size()));
+        for (auto&& [name, bundleId] : signAsset.appxProvisionBundleIds)
+            Logger::plain(std::format("    - {} => {}", name, bundleId));
+    }
 }
 
 /**
  * @brief 执行 IPA 签名主流程。
  *
  * 整个流程分为三个阶段：
- * 1. 准备阶段：解析配置、加载证书、解压 IPA、修改 plist、收集签名信息
- * 2. 签名阶段：递归签名所有组件
- * 3. 打包阶段：重新压缩为 IPA 并清理临时文件
+ *   Stage 1: 解析配置、加载证书、解压 IPA、修改 plist、收集签名信息（参数信息打印）。
+ *   Stage 2: 递归签名所有组件（处理签名的文件打印）。
+ *   Stage 3: 重新压缩为 IPA、清理临时文件，并打印总结（成功/失败 + 耗时）。
  *
  * @param opts 命令行参数。
  * @return 程序退出码，0 表示成功。
  */
 int DoSign(const Options& opts) {
-    Logger::debugf("{}", "start to sign ipa file");
-    Logger::info("start to sign ipa file");
+    auto totalStart = std::chrono::steady_clock::now();
 
-    // 准备工作。
+    auto reportFailure = [&](int code, std::string_view stageLabel) {
+        auto elapsed =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart)
+                .count();
+        Logger::section("Stage 3: Summary");
+        Logger::item("status:", "Failed");
+        Logger::item("failed at:", std::string(stageLabel));
+        Logger::item("exit code:", std::to_string(code));
+        Logger::item("total time:", std::format("{}.{:03} s", elapsed / 1000, elapsed % 1000));
+        return code;
+    };
+
+    // ===== Stage 1: 准备工作 + 配置/证书信息打印。 =====
     SignAsset signAsset{};
+    Configuration cfg{};
     {
-        Configuration cfg{};
-        if (auto code = getYAMLConfiguration(cfg, opts.signOpts.configrationFilePath)) return code;
+        // 先解析配置，得到 cfg 后再统一打印 stage 1 概览。
+        if (auto code = getYAMLConfiguration(cfg, opts.signOpts.configrationFilePath))
+            return reportFailure(code, "parse configuration");
         signAsset.ipaOutputPath = cfg.destinationIpaFilePath;
         signAsset.compressLevel = cfg.zipLevel;
 
-        if (auto code = readProvisionFile(signAsset.provision, cfg.mobileProvisionFilePath)) return code;
+        if (auto code = readProvisionFile(signAsset.provision, cfg.mobileProvisionFilePath))
+            return reportFailure(code, "read provision");
 
-        if (auto code = getProvisionPList(signAsset.plist, signAsset.provision)) return code;
+        if (auto code = getProvisionPList(signAsset.plist, signAsset.provision))
+            return reportFailure(code, "parse provision plist");
 
-        if (auto code = getTeamIdFromPList(signAsset.teamId, signAsset.plist)) return code;
+        if (auto code = getTeamIdFromPList(signAsset.teamId, signAsset.plist))
+            return reportFailure(code, "extract team id");
 
         if (auto code = getPListEntitlements(signAsset.plistEntitlements, signAsset.plist, cfg.universalLinkDomains,
                                              cfg.associatedDomains, cfg.keychainGroups, cfg.securityGroups))
-            return code;
+            return reportFailure(code, "build entitlements");
 
         if (auto code = parseCertificate(signAsset.certificate, cfg.certificateFilePath, cfg.certificatePassword,
                                          signAsset.plist))
-            return code;
+            return reportFailure(code, "parse certificate");
 
-        if (auto code = getCertificateName(signAsset.certificateName, signAsset.certificate)) return code;
+        if (auto code = getCertificateName(signAsset.certificateName, signAsset.certificate))
+            return reportFailure(code, "extract certificate common name");
 
-        if (auto code = readAppxProvisionFile(signAsset.appxProvisions, cfg.appxProvisions)) return code;
+        if (auto code = readAppxProvisionFile(signAsset.appxProvisions, cfg.appxProvisions))
+            return reportFailure(code, "read appx provisions");
 
         if (auto code = getAppxProvisionBundleIds(signAsset.appxProvisionBundleIds, signAsset.appxProvisions))
-            return code;
+            return reportFailure(code, "extract appx bundle ids");
 
-        if (auto code = unzipIPAFile(signAsset.ipaDir, cfg.ipaFilePath)) return code;
+        // 打印 Stage 1 概览。
+        printConfigurationSummary(cfg, opts.signOpts.configrationFilePath);
+        printSignAssetSummary(signAsset);
 
-
-        if (auto code = findAppDir(signAsset.appDir, signAsset.ipaDir)) return code;
-
+        // 准备签名前所需资源（解压、修改 plist、注入 dylib 等）。
+        if (auto code = unzipIPAFile(signAsset.ipaDir, cfg.ipaFilePath)) return reportFailure(code, "unzip ipa");
+        if (auto code = findAppDir(signAsset.appDir, signAsset.ipaDir)) return reportFailure(code, "find .app dir");
         if (auto code =
                 updateBundleIdIfNeed(cfg.newBundleId, signAsset.appDir, signAsset.appxProvisions,
                                      signAsset.appxProvisionBundleIds, cfg.addPlistStringKey, cfg.removePlistStringKey))
-            return code;
-
-        if (auto code = updateBundleNameIfNeed(cfg.newBundleName, signAsset.appDir)) return code;
-
-        if (auto code = updateBundleVersionIfNeed(cfg.newBundleVersion, signAsset.appDir)) return code;
-
-        if (auto code = updatePList(signAsset.appDir, cfg.addPlistStringKey, cfg.removePlistStringKey)) return code;
-
-        if (auto code = updateZhLocaleFile(cfg.newBundleName, signAsset.appDir)) return code;
-
-        if (auto code = updateNewZhLocaleFile(cfg.newBundleName, signAsset.appDir)) return code;
-
-        if (auto code = writeProvisionFile(signAsset.appDir, cfg.mobileProvisionFilePath)) return code;
-
+            return reportFailure(code, "update bundle id");
+        if (auto code = updateBundleNameIfNeed(cfg.newBundleName, signAsset.appDir))
+            return reportFailure(code, "update bundle name");
+        if (auto code = updateBundleVersionIfNeed(cfg.newBundleVersion, signAsset.appDir))
+            return reportFailure(code, "update bundle version");
+        if (auto code = updatePList(signAsset.appDir, cfg.addPlistStringKey, cfg.removePlistStringKey))
+            return reportFailure(code, "update info.plist");
+        if (auto code = updateZhLocaleFile(cfg.newBundleName, signAsset.appDir))
+            return reportFailure(code, "update zh locale");
+        if (auto code = updateNewZhLocaleFile(cfg.newBundleName, signAsset.appDir))
+            return reportFailure(code, "update zh-Hans locale");
+        if (auto code = writeProvisionFile(signAsset.appDir, cfg.mobileProvisionFilePath))
+            return reportFailure(code, "write provision file");
         removeCodeSignatureFolder(signAsset.appDir);
-
         if (auto code = createAdditionFile(signAsset.appDir, cfg.additionalFileName, cfg.additionalFileData))
-            return code;
+            return reportFailure(code, "create addition file");
 
         std::string dylibPath{};
-        if (auto code = writeDylibFileIfNeed(dylibPath, signAsset.appDir, cfg.dylibFilePath)) return code;
+        if (auto code = writeDylibFileIfNeed(dylibPath, signAsset.appDir, cfg.dylibFilePath))
+            return reportFailure(code, "copy dylib");
         signAsset.dylibPath = std::move(dylibPath);
         signAsset.weakInject = cfg.weakInject;
 
-        if (auto code = verifyPList(signAsset.appDir)) return code;
+        if (auto code = verifyPList(signAsset.appDir)) return reportFailure(code, "verify plist");
 
         signAsset.signInfo.path = FILE_NAME_SLASH;
-        if (auto code = getSignInfo(signAsset.signInfo, signAsset.appDir)) return code;
-
-        if (auto code = getPluginSignInfos(signAsset.signInfo, signAsset.appDir, signAsset.appDir)) return code;
-
+        if (auto code = getSignInfo(signAsset.signInfo, signAsset.appDir))
+            return reportFailure(code, "collect main sign info");
+        if (auto code = getPluginSignInfos(signAsset.signInfo, signAsset.appDir, signAsset.appDir))
+            return reportFailure(code, "collect plugin sign info");
         setSignInfoChanged(signAsset.signInfo);
     }
 
-    // 签名。
-    if (auto code = signFiles(signAsset.signInfo, signAsset, signAsset.appDir)) return code;
+    // ===== Stage 2: 签名打印。 =====
+    Logger::section("Stage 2: Signing");
+    auto signStart = std::chrono::steady_clock::now();
+    if (auto code = signFiles(signAsset.signInfo, signAsset, signAsset.appDir))
+        return reportFailure(code, "sign files");
+    auto signMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - signStart).count();
 
-    // 压缩文件。
-    if (auto code = packageIPA(signAsset.ipaDir, signAsset.ipaOutputPath, signAsset.compressLevel)) return code;
+    // 重新打包 IPA。
+    auto packStart = std::chrono::steady_clock::now();
+    Logger::plain("");
+    Logger::plain(std::format("  packaging ipa: {}", signAsset.ipaOutputPath.string()));
+    if (auto code = packageIPA(signAsset.ipaDir, signAsset.ipaOutputPath, signAsset.compressLevel))
+        return reportFailure(code, "package ipa");
+    auto packMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - packStart).count();
 
-    // 清理文件。
     removeIpaDir(signAsset.ipaDir);
+
+    // ===== Stage 3: 总结。 =====
+    auto totalMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
+    std::error_code ec{};
+    std::uint64_t outputSize{};
+    if (auto sz = std::filesystem::file_size(signAsset.ipaOutputPath, ec); !ec) outputSize = sz;
+
+    Logger::section("Stage 3: Summary");
+    Logger::item("status:", "Success");
+    Logger::item("output ipa:", signAsset.ipaOutputPath.string());
+    if (outputSize > 0) {
+        if (outputSize >= 1024ULL * 1024)
+            Logger::item(
+                "output size:",
+                std::format("{:.2f} MB ({} bytes)", static_cast<double>(outputSize) / (1024 * 1024), outputSize));
+        else
+            Logger::item("output size:", std::format("{} bytes", outputSize));
+    }
+    Logger::item("sign time:", std::format("{}.{:03} s", signMs / 1000, signMs % 1000));
+    Logger::item("package time:", std::format("{}.{:03} s", packMs / 1000, packMs % 1000));
+    Logger::item("total time:", std::format("{}.{:03} s", totalMs / 1000, totalMs % 1000));
 
     return 0;
 }

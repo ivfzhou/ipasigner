@@ -43,7 +43,7 @@ namespace gitee::com::ivfzhou::ipasigner {
 /// EVP_PKEY 自定义删除器，释放 OpenSSL 私钥资源。
 struct EvpPkeyDeleter {
     void operator()(EVP_PKEY* p) const noexcept {
-        Logger::info("free private key");
+        Logger::debug("free private key");
         EVP_PKEY_free(p);
     }
 };
@@ -51,7 +51,7 @@ struct EvpPkeyDeleter {
 /// X509 自定义删除器，释放 OpenSSL 证书资源。
 struct X509Deleter {
     void operator()(X509* p) const noexcept {
-        Logger::info("free certificate");
+        Logger::debug("free certificate");
         X509_free(p);
     }
 };

@@ -64,6 +64,12 @@ std::optional<Options> ParseCommandFlags(const int argc, const char* argv[]) {
         parser.add_description("Used to signing ios/ipa file");
         parser.add_epilog("Contribute to https://github.com/ivfzhou/ipasigner");
 
+        // 全局参数：详细输出开关。
+        parser.add_argument("-v", "--verbose")
+            .help("enable verbose (DEBUG) log output")
+            .default_value(false)
+            .implicit_value(true);
+
         // 注册 sign 子命令的必选参数：配置文件路径。
         signCommand.add_argument(OPTION_CONFIGURATION_FILE_PATH).help("yaml format sign configuration file").required();
         parser.add_subparser(signCommand);
@@ -75,6 +81,7 @@ std::optional<Options> ParseCommandFlags(const int argc, const char* argv[]) {
         Options opts{};
         opts.help = parser["--help"] == true;
         opts.version = parser["--version"] == true;
+        opts.verbose = parser.get<bool>("--verbose");
         opts.sign = parser.is_subcommand_used(OPTION_SUBCOMMAND_SIGN);
         if (opts.sign)
             if (auto value = signCommand.present(OPTION_CONFIGURATION_FILE_PATH))
