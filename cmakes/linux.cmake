@@ -8,15 +8,7 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
-set(COMPILER_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
-set(COMPILER_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
-set(COMPILER_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
-set(COMPILER_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -finput-charset=UTF-8 -fexec-charset=UTF-8 -std=c++20")
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -g0")
-set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} --all-warnings -pedantic -Winline -O0 -Wall -g3 -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-function -D_GLIBCXX_DEBUG")
-
+# 包含依赖代码库的构建。
 include(${CMAKE_SOURCE_DIR}/cmakes/linux/argparse.cmake)
 include(${CMAKE_SOURCE_DIR}/cmakes/linux/bzip2.cmake)
 include(${CMAKE_SOURCE_DIR}/cmakes/linux/pugixml.cmake)
@@ -27,9 +19,18 @@ include(${CMAKE_SOURCE_DIR}/cmakes/linux/zstd.cmake)
 include(${CMAKE_SOURCE_DIR}/cmakes/linux/openssl.cmake)
 include(${CMAKE_SOURCE_DIR}/cmakes/linux/libzip.cmake)
 
+# 添加系统信息宏。
 list(APPEND DEFINITIONS "-DLINUX")
 
-unset(COMPILER_CXX_FLAGS_RELEASE)
-unset(COMPILER_CXX_FLAGS_DEBUG)
-unset(COMPILER_C_FLAGS_RELEASE)
-unset(COMPILER_C_FLAGS_DEBUG)
+# 设置可执行程序运行时，查找动态库的位置。
+set_target_properties(
+        ${PROJECT_NAME}
+        PROPERTIES
+        BUILD_RPATH "\$ORIGIN"
+        INSTALL_RPATH "\$ORIGIN"
+)
+
+# 设置编译参数。
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -finput-charset=UTF-8 -fexec-charset=UTF-8")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -g0")
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} --all-warnings -pedantic -Winline -O0 -Wall -g3 -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-function -D_GLIBCXX_DEBUG")

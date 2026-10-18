@@ -10,33 +10,42 @@
 
 cmake_minimum_required(VERSION 3.30)
 
-# 项目信息。
+# 声明项目信息。
 project(ipasigner LANGUAGES CXX VERSION 1.0.1)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# 依赖代码库信息。
+# 声明依赖代码库信息。
+set(ARGPARSE_NAME argparse)
 set(ARGPARSE_URL https://github.com/p-ranav/argparse/archive/refs/tags/v3.2.zip)
 set(ARGPARSE_SHA256 14c1a0e975d6877dfeaf52a1e79e54f70169a847e29c7e13aa7fe68a3d0ecbf1)
+set(BZIP2_NAME bzip2)
 set(BZIP2_URL https://github.com/libarchive/bzip2/archive/1ea1ac188ad4b9cb662e3f8314673c63df95a589.zip)
 set(BZIP2_SHA256 b803cdb2d044a53bde3b89cbbe811486035c885994e75f2879116ca7be0f613b)
-set(LIBZIP_URL https://github.com/nih-at/libzip/archive/refs/tags/v1.11.4.zip)
-set(LIBZIP_SHA256 3f78eaac85d98d5ac41cc640834dafba7257eb81989854aeb456ed91a177d7c2)
-set(OPENSSL_URL https://github.com/openssl/openssl/archive/refs/tags/openssl-3.6.1.zip)
-set(OPENSSL_SHA256 b5fb172237ed3b1b47a9f7f15d3a40f9e9563f59f544b7078780ee27279a3c0f)
+set(PUGIXML_NAME pugixml)
 set(PUGIXML_URL https://github.com/zeux/pugixml/archive/refs/tags/v1.15.zip)
 set(PUGIXML_SHA256 0dd4dc16e38bbc1c889d3a59660072450127bac7d19415f3cf5d5d6b25c58b35)
+set(XZ_NAME xz)
 set(XZ_URL https://github.com/tukaani-project/xz/archive/refs/tags/v5.8.2.zip)
 set(XZ_SHA256 f31af924df81d645720eee558a00394d3f8a6c59b97c315a541a6598a9aea3d2)
+set(YAML_CPP_NAME yaml-cpp)
 set(YAML_CPP_URL https://github.com/jbeder/yaml-cpp/archive/refs/tags/yaml-cpp-0.9.0.zip)
 set(YAML_CPP_SHA256 1c22709eb1fcde200c87ef4e878ce2c9477cc05eae84ebf1f72ec5b356468fee)
+set(ZLIB_NAME zlib)
 set(ZLIB_URL https://github.com/madler/zlib/archive/refs/tags/v1.3.2.zip)
 set(ZLIB_SHA256 31fd9fee98812abcf147d0e103bc4d2f983c35a8d7a807a328a299f3a74e0050)
+set(ZSTD_NAME zstd)
 set(ZSTD_URL https://github.com/facebook/zstd/archive/refs/tags/v1.5.7.zip)
 set(ZSTD_SHA256 7897bc5d620580d9b7cd3539c44b59d78f3657d33663fe97a145e07b4ebd69a4)
+set(OPENSSL_NAME openssl)
+set(OPENSSL_URL https://github.com/openssl/openssl/archive/refs/tags/openssl-3.6.1.zip)
+set(OPENSSL_SHA256 b5fb172237ed3b1b47a9f7f15d3a40f9e9563f59f544b7078780ee27279a3c0f)
+set(LIBZIP_NAME libzip)
+set(LIBZIP_URL https://github.com/nih-at/libzip/archive/refs/tags/v1.11.4.zip)
+set(LIBZIP_SHA256 3f78eaac85d98d5ac41cc640834dafba7257eb81989854aeb456ed91a177d7c2)
 
-# 全局变量。
+# 声明会使用的变量。
 set(SOURCES)
 set(HEADERS)
 set(DEPENDENCIES)
@@ -45,36 +54,63 @@ set(DYNAMIC_LIBRARIES)
 set(LIBRARIES)
 set(INCLUDES ${CMAKE_SOURCE_DIR})
 
-# 版本信息宏。
-list(APPEND DEFINITIONS "-DPROJECT_NAME=\"${PROJECT_NAME}\"")
-string(TIMESTAMP DATETIME "%Y%m%d%H%M%S")
-list(APPEND DEFINITIONS "-DBUILT_TIME=\"${DATETIME}\"")
-unset(DATETIME)
-if (NOT DEFINED PROJECT_VERSION)
-    list(APPEND DEFINITIONS "-DVERSION=\"unknown\"")
-else ()
-    list(APPEND DEFINITIONS "-DVERSION=\"${PROJECT_VERSION}\"")
-endif ()
-execute_process(
-        COMMAND git rev-parse --short HEAD
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        OUTPUT_VARIABLE GIT_COMMIT_ID
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-)
-if (NOT DEFINED GIT_COMMIT_ID OR GIT_COMMIT_ID STREQUAL "")
-    list(APPEND DEFINITIONS "-DGIT_COMMIT_ID=\"unknown\"")
-else ()
-    list(APPEND DEFINITIONS "-DGIT_COMMIT_ID=\"${GIT_COMMIT_ID}\"")
-    unset(GIT_COMMIT_ID)
+# 设置版本信息宏。
+block(SCOPE_FOR VARIABLES PROPAGATE DEFINITIONS)
+    list(APPEND DEFINITIONS "-DPROJECT_NAME=\"${PROJECT_NAME}\"")
+    string(TIMESTAMP DATETIME "%Y%m%d%H%M%S")
+    list(APPEND DEFINITIONS "-DBUILT_TIME=\"${DATETIME}\"")
+    if (NOT DEFINED PROJECT_VERSION)
+        list(APPEND DEFINITIONS "-DVERSION=\"unknown\"")
+    else ()
+        list(APPEND DEFINITIONS "-DVERSION=\"${PROJECT_VERSION}\"")
+    endif ()
+    execute_process(
+            COMMAND git rev-parse --short HEAD
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            OUTPUT_VARIABLE GIT_COMMIT_ID
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+    )
+    if (NOT DEFINED GIT_COMMIT_ID OR GIT_COMMIT_ID STREQUAL "")
+        list(APPEND DEFINITIONS "-DGIT_COMMIT_ID=\"unknown\"")
+    else ()
+        list(APPEND DEFINITIONS "-DGIT_COMMIT_ID=\"${GIT_COMMIT_ID}\"")
+    endif ()
+endblock()
+
+# 设置默认构建类型，避免 CMAKE_BUILD_TYPE 为空导致依赖目录与构建类型判断失效。
+if (NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "choose the type of build" FORCE)
 endif ()
 
-# 依赖安装目录。
+# 处理依赖安装目录。
 set(DEPENDENCIES_DIRECTORY ${CMAKE_SOURCE_DIR}/dependencies/${CMAKE_BUILD_TYPE})
 file(TO_CMAKE_PATH "${DEPENDENCIES_DIRECTORY}" DEPENDENCIES_DIRECTORY)
 file(MAKE_DIRECTORY ${DEPENDENCIES_DIRECTORY})
 
-# 加载依赖代码库。
+# 收集源代码（显式列出，避免 file(GLOB) 无法感知新增文件）。
+set(SOURCES
+        ${CMAKE_SOURCE_DIR}/arguments.cpp
+        ${CMAKE_SOURCE_DIR}/common.cpp
+        ${CMAKE_SOURCE_DIR}/compress.cpp
+        ${CMAKE_SOURCE_DIR}/Configuration.cpp
+        ${CMAKE_SOURCE_DIR}/constants.cpp
+        ${CMAKE_SOURCE_DIR}/crypto.cpp
+        ${CMAKE_SOURCE_DIR}/do_sign.cpp
+        ${CMAKE_SOURCE_DIR}/main.cpp
+        ${CMAKE_SOURCE_DIR}/plist.cpp
+        ${CMAKE_SOURCE_DIR}/signing.cpp
+        ${CMAKE_SOURCE_DIR}/version.cpp
+)
+# file(GLOB SOURCES ${CMAKE_SOURCE_DIR}/*.cpp)
+
+# 收集头文件。
+file(GLOB HEADERS ${CMAKE_SOURCE_DIR}/*.hpp ${CMAKE_SOURCE_DIR}/*.tpp)
+
+# 声明可执行程序。
+add_executable(${PROJECT_NAME} ${SOURCES})
+
+# 加载当前系统平台的依赖代码库（cmake 脚本）。
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
     include(${CMAKE_SOURCE_DIR}/cmakes/windows.cmake)
 elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -83,45 +119,33 @@ else ()
     message(FATAL_ERROR "unsupported operating system ${CMAKE_SYSTEM_NAME}")
 endif ()
 
-# 收集源码，设置可执行程序。
-file(GLOB SOURCES ${CMAKE_SOURCE_DIR}/*.cpp)
-add_executable(${PROJECT_NAME} ${SOURCES})
+# 被依赖的代码库需要放后面。
+list(REVERSE LIBRARIES)
 
-# 包含头文件。
-file(GLOB HEADERS
-        ${CMAKE_SOURCE_DIR}/*.hpp
-        ${CMAKE_SOURCE_DIR}/*.tpp
-)
+# 设置编译前要处理的依赖项。设置构建顺序依赖。
+add_dependencies(${PROJECT_NAME} ${DEPENDENCIES})
+
+# 设置编译时头文件搜索路径、包含目录。
 target_include_directories(${PROJECT_NAME} PRIVATE ${INCLUDES})
 
-# 链接依赖库。
-list(REVERSE LIBRARIES)
+# 设置链接时依赖的代码库。
 target_link_libraries(${PROJECT_NAME} ${LIBRARIES})
 
-# 设置宏，编译属性。
+# 设置编译时的宏。
 target_compile_definitions(${PROJECT_NAME} PRIVATE ${DEFINITIONS})
-set_target_properties(
-        ${PROJECT_NAME}
-        PROPERTIES
-        BUILD_RPATH "\$ORIGIN"
-        INSTALL_RPATH "\$ORIGIN"
-)
-
-# 添加目标依赖。
-foreach (v ${DEPENDENCIES})
-    add_dependencies(${PROJECT_NAME} ${v})
-endforeach ()
 
 # 设置安装可执行程序路径。
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
 
 # 设置头文件安装路径。
-foreach (v ${HEADERS})
-    file(RELATIVE_PATH HEADER_RELATIVE_PATH ${CMAKE_SOURCE_DIR} ${v})
-    get_filename_component(HEADER_DIR ${HEADER_RELATIVE_PATH} DIRECTORY)
-    if (HEADER_DIR STREQUAL "")
-        install(FILES ${v} DESTINATION include)
-    else ()
-        install(FILES ${v} DESTINATION include/${HEADER_DIR})
-    endif ()
-endforeach ()
+block()
+    foreach (v ${HEADERS})
+        file(RELATIVE_PATH HEADER_RELATIVE_PATH ${CMAKE_SOURCE_DIR} ${v})
+        get_filename_component(HEADER_DIR ${HEADER_RELATIVE_PATH} DIRECTORY)
+        if (HEADER_DIR STREQUAL "")
+            install(FILES ${v} DESTINATION include)
+        else ()
+            install(FILES ${v} DESTINATION include/${HEADER_DIR})
+        endif ()
+    endforeach ()
+endblock()
