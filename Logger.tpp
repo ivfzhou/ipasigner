@@ -35,7 +35,7 @@
 
 #include "constants.hpp"
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 日志工具类，提供静态方法输出带时间戳的日志。

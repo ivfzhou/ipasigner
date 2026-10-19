@@ -24,8 +24,8 @@
  * 同时定义了 EVP_PKEY 和 X509 的智能指针类型，通过自定义删除器实现 RAII 资源管理。
  */
 
-#ifndef IPASIGNER_CRYPTO_HPP
-#define IPASIGNER_CRYPTO_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_CRYPTO_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_CRYPTO_HPP
 
 #include <memory>
 #include <optional>
@@ -38,7 +38,7 @@
 #include <openssl/types.h>
 #include <openssl/x509.h>
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /// EVP_PKEY 自定义删除器，释放 OpenSSL 私钥资源。
 struct EvpPkeyDeleter {

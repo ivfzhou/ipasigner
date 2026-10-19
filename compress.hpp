@@ -18,12 +18,12 @@
  * 解压支持多线程并行处理，压缩支持目录、普通文件和符号链接。
  */
 
-#ifndef IPASIGNER_COMPRESS_HPP
-#define IPASIGNER_COMPRESS_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_COMPRESS_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_COMPRESS_HPP
 
 #include <filesystem>
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 解压 IPA 文件（ZIP 格式）到指定目录。

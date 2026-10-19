@@ -23,10 +23,10 @@
  * - 文件名和文件后缀常量
  */
 
-#ifndef IPASIGNER_CONSTANTS_HPP
-#define IPASIGNER_CONSTANTS_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_CONSTANTS_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_CONSTANTS_HPP
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /// ZIP 解压缓冲区大小（8KB）。
 constexpr int ZIP_BUFFER_SIZE = 8 * 1024;

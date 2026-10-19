@@ -48,7 +48,7 @@
 #include "constants.hpp"
 #include "plist.hpp"
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 从 plist XML 中获取指定键的字符串值。

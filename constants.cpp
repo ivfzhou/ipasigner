@@ -19,7 +19,7 @@
 
 #include "constants.hpp"
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 extern const int DEFAULT_ZIP_COMPRESS_LEVEL = 6;
 

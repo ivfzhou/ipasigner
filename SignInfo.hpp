@@ -19,13 +19,13 @@
  * 该结构以树形方式组织，根节点为主 .app，子节点为插件和框架。
  */
 
-#ifndef IPASIGNER_SIGNINFO_HPP
-#define IPASIGNER_SIGNINFO_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_SIGNINFO_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_SIGNINFO_HPP
 
 #include <string>
 #include <vector>
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 签名信息类，描述一个可签名组件的元数据。

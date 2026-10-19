@@ -24,15 +24,15 @@
  * 以及 Mach-O 文件签名的顶层接口。
  */
 
-#ifndef IPASIGNER_SIGNING_HPP
-#define IPASIGNER_SIGNING_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_SIGNING_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_SIGNING_HPP
 
 #include <filesystem>
 #include <string_view>
 
 #include <openssl/types.h>
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 签名单个 Mach-O 文件（支持 Fat Binary 多架构）。

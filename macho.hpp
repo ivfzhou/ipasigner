@@ -18,12 +18,12 @@
  * 以及 Apple CodeSignature（代码签名）相关的 magic 常量、blob 结构体和 slot 定义。
  */
 
-#ifndef IPASIGNER_MACHO_HPP
-#define IPASIGNER_MACHO_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_MACHO_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_MACHO_HPP
 
 #include <cstdint>
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 // CPU 类型定义。
 using cpu_type_t = int;

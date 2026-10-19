@@ -38,7 +38,7 @@
 #include "common.hpp"
 #include "crypto.hpp"
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 从描述文件的二进制数据中提取 CMS 签名的 plist 内容。

@@ -18,14 +18,14 @@
  * 本程序使用子命令模式：`ipasigner sign <configuration>` 执行签名操作。
  */
 
-#ifndef IPASIGNER_ARGUMENTS_HPP
-#define IPASIGNER_ARGUMENTS_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_ARGUMENTS_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_ARGUMENTS_HPP
 
 #include <optional>
 #include <ostream>
 #include <string>
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 签名子命令的配置选项。

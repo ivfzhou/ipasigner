@@ -18,7 +18,7 @@
  * 完成对 IPA 包的证书替换、描述文件替换、Bundle ID 修改、动态库注入等签名操作。
  */
 
-#ifdef _WIN32
+#ifdef WINDOWS
 #include <windows.h>
 #endif
 #include <cstdlib>
@@ -27,7 +27,7 @@
 #include "constants.hpp"
 #include "do_sign.hpp"
 
-using namespace gitee::com::ivfzhou;
+using namespace com::gitee::ivfzhou;
 
 /**
  * @brief 程序主入口函数。

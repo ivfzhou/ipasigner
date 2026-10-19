@@ -25,13 +25,13 @@
  * @endcode
  */
 
-#ifndef IPASIGNER_SCOPE_GUARD_HPP
-#define IPASIGNER_SCOPE_GUARD_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_SCOPE_GUARD_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_SCOPE_GUARD_HPP
 
 #include <type_traits>
 #include <utility>
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 作用域守卫模板类，析构时自动执行注册的清理函数。

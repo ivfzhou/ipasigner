@@ -18,12 +18,12 @@
  * 在 CMakeLists.txt 中通过宏定义注入。
  */
 
-#ifndef IPASIGNER_VERSION_HPP
-#define IPASIGNER_VERSION_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_VERSION_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_VERSION_HPP
 
 #include <string>
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 获取程序版本信息字符串。

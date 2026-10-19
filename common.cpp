@@ -48,7 +48,7 @@
 #include "constants.hpp"
 #include "macho.hpp"
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 // 交换 16 位无符号整数的字节序（大端 <-> 小端），即交换高低两个字节的位置。
 std::uint16_t Swap(const std::uint16_t value) { return (value >> 8 & 0x00ff) | (value << 8 & 0xff00); }

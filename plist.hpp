@@ -10,15 +10,15 @@
  * 底层使用 pugixml 库进行 XML 解析和 DOM 操作。
  */
 
-#ifndef IPASIGNER_PLIST_HPP
-#define IPASIGNER_PLIST_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_PLIST_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_PLIST_HPP
 
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 从 plist XML 中获取指定键的字符串值。

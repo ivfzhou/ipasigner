@@ -32,7 +32,7 @@
 #include "Logger.tpp"
 #include "constants.hpp"
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 友元函数，将 Configuration 对象以 YAML 格式输出到流。
@@ -204,7 +204,7 @@ bool ValidateYAMLConfiguration(Configuration& cfg) {
 
 namespace YAML {
 
-using namespace gitee::com::ivfzhou;
+using namespace com::gitee::ivfzhou;
 
 /**
  * @brief 从 YAML 节点中获取字符串值。

@@ -54,7 +54,7 @@
 #include "macho.hpp"
 #include "signing.hpp"
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 构建 Requirements Slot（CSSLOT_REQUIREMENTS）。

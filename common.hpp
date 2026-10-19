@@ -25,8 +25,8 @@
  * - 目录创建和 Bundle ID 校验
  */
 
-#ifndef IPASIGNER_COMMON_HPP
-#define IPASIGNER_COMMON_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_COMMON_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_COMMON_HPP
 
 #include <cstdlib>
 #include <filesystem>
@@ -37,7 +37,7 @@
 #include <utility>
 #include <vector>
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 // 交换 16 位无符号整数的字节序（大端 <-> 小端），即交换高低两个字节的位置。
 std::uint16_t Swap(std::uint16_t value);

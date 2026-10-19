@@ -30,7 +30,7 @@
 #include "constants.hpp"
 #include "version.hpp"
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 友元函数，将 Options 对象格式化输出到流。

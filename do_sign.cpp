@@ -49,7 +49,7 @@
 #include "plist.hpp"
 #include "signing.hpp"
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 解析并校验 YAML 配置文件。

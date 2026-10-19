@@ -52,7 +52,7 @@
 #include "compress.hpp"
 #include "constants.hpp"
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 将 std::filesystem::path 转换为 UTF-8 编码的 std::string。

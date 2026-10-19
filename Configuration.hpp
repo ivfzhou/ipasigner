@@ -19,8 +19,8 @@
  * 同时提供 YAML 序列化/反序列化支持和配置校验函数。
  */
 
-#ifndef IPASIGNER_CONFIGURATION_HPP
-#define IPASIGNER_CONFIGURATION_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_CONFIGURATION_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_CONFIGURATION_HPP
 
 #include <map>
 #include <optional>
@@ -33,7 +33,7 @@
 
 #include "constants.hpp"
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 签名配置类，对应 YAML 配置文件中的所有字段。
@@ -127,7 +127,7 @@ bool ValidateYAMLConfiguration(Configuration& cfg);
 
 namespace YAML {
 
-using namespace gitee::com::ivfzhou;
+using namespace com::gitee::ivfzhou;
 
 /**
  * @brief yaml-cpp 序列化/反序列化特化，实现 Configuration 与 YAML 节点的互转。

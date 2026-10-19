@@ -23,7 +23,7 @@
 #include "constants.hpp"
 #include "version.hpp"
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 获取程序版本信息字符串。

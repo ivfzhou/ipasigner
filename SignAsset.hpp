@@ -19,8 +19,8 @@
  * 该类在 DoSign 流程中作为核心数据载体贯穿整个签名过程。
  */
 
-#ifndef IPASIGNER_SIGNASSET_HPP
-#define IPASIGNER_SIGNASSET_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_SIGNASSET_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_SIGNASSET_HPP
 
 #include <filesystem>
 #include <map>
@@ -29,7 +29,7 @@
 #include "SignInfo.hpp"
 #include "crypto.hpp"
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 签名资产类，聚合签名流程中所需的全部资源。

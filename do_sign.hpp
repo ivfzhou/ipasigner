@@ -18,12 +18,12 @@
  * 负责协调配置解析、证书加载、IPA 解压、plist 修改、代码签名和重新打包等步骤。
  */
 
-#ifndef IPASIGNER_DO_SIGN_HPP
-#define IPASIGNER_DO_SIGN_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_DO_SIGN_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_DO_SIGN_HPP
 
 #include "arguments.hpp"
 
-namespace gitee::com::ivfzhou::ipasigner {
+namespace com::gitee::ivfzhou::ipasigner {
 
 /**
  * @brief 执行 IPA 签名主流程。
