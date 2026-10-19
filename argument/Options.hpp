@@ -11,30 +11,21 @@
  */
 
 /**
- * @file arguments.hpp
- * @brief 命令行参数解析接口声明。
+ * @file Options.hpp
+ * @brief 命令行参数解析结果声明。
  *
- * 定义了命令行参数相关的数据结构（Options、SignOptions）和解析函数。
- * 本程序使用子命令模式：`ipasigner sign <configuration>` 执行签名操作。
+ * 定义 Options 类，用于承载解析得到的全局选项
+ * （版本、帮助、详细输出）与签名子命令选项（SignOptions）。
  */
 
-#ifndef COM_GITEE_IVFZHOU_IPASIGNER_ARGUMENTS_HPP
-#define COM_GITEE_IVFZHOU_IPASIGNER_ARGUMENTS_HPP
+#ifndef COM_GITEE_IVFZHOU_IPASIGNER_ARGUMENT_OPTIONS_HPP
+#define COM_GITEE_IVFZHOU_IPASIGNER_ARGUMENT_OPTIONS_HPP
 
-#include <optional>
 #include <ostream>
-#include <string>
+
+#include "SignOptions.hpp"
 
 namespace com::gitee::ivfzhou::ipasigner {
-
-/**
- * @brief 签名子命令的配置选项。
- */
-class SignOptions final {
-  public:
-    /// YAML 格式的签名配置文件路径。
-    std::string configrationFilePath;
-};
 
 /**
  * @brief 命令行参数解析结果。
@@ -61,18 +52,6 @@ class Options final {
     /// 签名子命令的配置选项。
     SignOptions signOpts;
 };
-
-/**
- * @brief 解析命令行参数。
- *
- * 使用 argparse 库解析命令行参数，支持 sign 子命令。
- * 若解析失败或未指定子命令，会打印帮助信息。
- *
- * @param argc 命令行参数个数。
- * @param argv 命令行参数数组。
- * @return 成功返回解析后的 Options 对象，失败返回 std::nullopt。
- */
-std::optional<Options> ParseCommandFlags(int argc, const char* argv[]);
 
 }
 

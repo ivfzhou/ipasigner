@@ -88,21 +88,9 @@ set(DEPENDENCIES_DIRECTORY ${CMAKE_SOURCE_DIR}/dependencies/${CMAKE_BUILD_TYPE})
 file(TO_CMAKE_PATH "${DEPENDENCIES_DIRECTORY}" DEPENDENCIES_DIRECTORY)
 file(MAKE_DIRECTORY ${DEPENDENCIES_DIRECTORY})
 
-# 收集源代码（显式列出，避免 file(GLOB) 无法感知新增文件）。
-set(SOURCES
-        ${CMAKE_SOURCE_DIR}/arguments.cpp
-        ${CMAKE_SOURCE_DIR}/common.cpp
-        ${CMAKE_SOURCE_DIR}/compress.cpp
-        ${CMAKE_SOURCE_DIR}/Configuration.cpp
-        ${CMAKE_SOURCE_DIR}/constants.cpp
-        ${CMAKE_SOURCE_DIR}/crypto.cpp
-        ${CMAKE_SOURCE_DIR}/do_sign.cpp
-        ${CMAKE_SOURCE_DIR}/main.cpp
-        ${CMAKE_SOURCE_DIR}/plist.cpp
-        ${CMAKE_SOURCE_DIR}/signing.cpp
-        ${CMAKE_SOURCE_DIR}/version.cpp
-)
-# file(GLOB SOURCES ${CMAKE_SOURCE_DIR}/*.cpp)
+# 收集源代码。
+file(GLOB SOURCES ${CMAKE_SOURCE_DIR}/*.cpp)
+file(GLOB SOURCES ${CMAKE_SOURCE_DIR}/argument/*.cpp)
 
 # 收集头文件。
 file(GLOB HEADERS ${CMAKE_SOURCE_DIR}/*.hpp ${CMAKE_SOURCE_DIR}/*.tpp)

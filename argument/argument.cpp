@@ -11,39 +11,24 @@
  */
 
 /**
- * @file arguments.cpp
+ * @file argument.cpp
  * @brief 命令行参数解析实现。
  *
  * 使用 argparse 库实现命令行参数解析，支持 sign 子命令。
  * sign 子命令接受一个必选参数：YAML 格式的签名配置文件路径。
  */
 
-#include <exception>
-#include <ios>
 #include <iostream>
 #include <optional>
-#include <ostream>
 
 #include <argparse/argparse.hpp>
 
-#include "arguments.hpp"
-#include "constants.hpp"
-#include "version.hpp"
+#include "../constants.hpp"
+#include "../version.hpp"
+#include "Options.hpp"
+#include "argument.hpp"
 
 namespace com::gitee::ivfzhou::ipasigner {
-
-/**
- * @brief 友元函数，将 Options 对象格式化输出到流。
- * @param out 输出流。
- * @param opts 待输出的 Options 对象。
- * @return 输出流的引用。
- */
-std::ostream& operator<<(std::ostream& out, const Options& opts) {
-    out << "signOpts.configrationFilePath: " << opts.signOpts.configrationFilePath << std::endl;
-    out << "version: " << std::boolalpha << opts.version << std::endl;
-    out << "help: " << std::boolalpha << opts.help << std::endl;
-    return out;
-}
 
 /**
  * @brief 解析命令行参数。
@@ -85,7 +70,7 @@ std::optional<Options> ParseCommandFlags(const int argc, const char* argv[]) {
         opts.sign = parser.is_subcommand_used(OPTION_SUBCOMMAND_SIGN);
         if (opts.sign)
             if (auto value = signCommand.present(OPTION_CONFIGURATION_FILE_PATH))
-                opts.signOpts.configrationFilePath = *value;
+                opts.signOpts.configurationFilePath = *value;
 
         // 如果没有指定任何子命令，打印帮助信息供用户参考。
         if (!parser.is_subcommand_used(OPTION_SUBCOMMAND_SIGN)) std::cout << parser << std::endl;

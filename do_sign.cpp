@@ -1377,7 +1377,7 @@ int DoSign(const Options& opts) {
     Configuration cfg{};
     {
         // 先解析配置，得到 cfg 后再统一打印 stage 1 概览。
-        if (auto code = getYAMLConfiguration(cfg, opts.signOpts.configrationFilePath))
+        if (auto code = getYAMLConfiguration(cfg, opts.signOpts.configurationFilePath))
             return reportFailure(code, "parse configuration");
         signAsset.ipaOutputPath = cfg.destinationIpaFilePath;
         signAsset.compressLevel = cfg.zipLevel;
@@ -1409,7 +1409,7 @@ int DoSign(const Options& opts) {
             return reportFailure(code, "extract appx bundle ids");
 
         // 打印 Stage 1 概览。
-        printConfigurationSummary(cfg, opts.signOpts.configrationFilePath);
+        printConfigurationSummary(cfg, opts.signOpts.configurationFilePath);
         printSignAssetSummary(signAsset);
 
         // 准备签名前所需资源（解压、修改 plist、注入 dylib 等）。
