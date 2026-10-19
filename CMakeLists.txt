@@ -46,12 +46,12 @@ set(LIBZIP_URL https://github.com/nih-at/libzip/archive/refs/tags/v1.11.4.zip)
 set(LIBZIP_SHA256 3f78eaac85d98d5ac41cc640834dafba7257eb81989854aeb456ed91a177d7c2)
 
 # 声明会使用的变量。
+set(HEADERS ${CMAKE_SOURCE_DIR})
 set(SOURCES)
 set(DEPENDENCIES)
 set(DEFINITIONS)
 set(DYNAMIC_LIBRARIES)
 set(LIBRARIES)
-set(INCLUDES ${CMAKE_SOURCE_DIR})
 
 # 设置版本信息宏。
 block(SCOPE_FOR VARIABLES PROPAGATE DEFINITIONS)
@@ -112,7 +112,7 @@ list(REVERSE LIBRARIES)
 add_dependencies(${PROJECT_NAME} ${DEPENDENCIES})
 
 # 设置编译时头文件搜索路径、包含目录。
-target_include_directories(${PROJECT_NAME} PRIVATE ${INCLUDES})
+target_include_directories(${PROJECT_NAME} PRIVATE ${HEADERS})
 
 # 设置链接时依赖的代码库。
 target_link_libraries(${PROJECT_NAME} ${LIBRARIES})
@@ -125,13 +125,13 @@ install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
 
 # 设置头文件安装路径。
 block()
-    file(GLOB HEADERS
+    file(GLOB INSTALL_HEADERS
             ${CMAKE_SOURCE_DIR}/*.hpp
             ${CMAKE_SOURCE_DIR}/*.tpp
             ${CMAKE_SOURCE_DIR}/argument/*.hpp
             ${CMAKE_SOURCE_DIR}/argument/*.tpp
     )
-    foreach (v ${HEADERS})
+    foreach (v ${INSTALL_HEADERS})
         file(RELATIVE_PATH HEADER_RELATIVE_PATH ${CMAKE_SOURCE_DIR} ${v})
         get_filename_component(HEADER_DIR ${HEADER_RELATIVE_PATH} DIRECTORY)
         if (HEADER_DIR STREQUAL "")
