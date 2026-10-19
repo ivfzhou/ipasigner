@@ -23,10 +23,10 @@
 
 #include <argparse/argparse.hpp>
 
-#include "../constants.hpp"
-#include "../version.hpp"
-#include "Options.hpp"
-#include "argument.hpp"
+#include "constants.hpp"
+#include "version.hpp"
+#include "argument/Options.hpp"
+#include "argument/argument.hpp"
 
 namespace com::gitee::ivfzhou::ipasigner {
 

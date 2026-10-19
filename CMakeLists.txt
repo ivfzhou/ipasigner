@@ -47,7 +47,6 @@ set(LIBZIP_SHA256 3f78eaac85d98d5ac41cc640834dafba7257eb81989854aeb456ed91a177d7
 
 # 声明会使用的变量。
 set(SOURCES)
-set(HEADERS)
 set(DEPENDENCIES)
 set(DEFINITIONS)
 set(DYNAMIC_LIBRARIES)
@@ -89,11 +88,10 @@ file(TO_CMAKE_PATH "${DEPENDENCIES_DIRECTORY}" DEPENDENCIES_DIRECTORY)
 file(MAKE_DIRECTORY ${DEPENDENCIES_DIRECTORY})
 
 # 收集源代码。
-file(GLOB SOURCES ${CMAKE_SOURCE_DIR}/*.cpp)
-file(GLOB SOURCES ${CMAKE_SOURCE_DIR}/argument/*.cpp)
-
-# 收集头文件。
-file(GLOB HEADERS ${CMAKE_SOURCE_DIR}/*.hpp ${CMAKE_SOURCE_DIR}/*.tpp)
+file(GLOB SOURCES
+        ${CMAKE_SOURCE_DIR}/*.cpp
+        ${CMAKE_SOURCE_DIR}/argument/*.cpp
+)
 
 # 声明可执行程序。
 add_executable(${PROJECT_NAME} ${SOURCES})
@@ -127,6 +125,12 @@ install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
 
 # 设置头文件安装路径。
 block()
+    file(GLOB HEADERS
+            ${CMAKE_SOURCE_DIR}/*.hpp
+            ${CMAKE_SOURCE_DIR}/*.tpp
+            ${CMAKE_SOURCE_DIR}/argument/*.hpp
+            ${CMAKE_SOURCE_DIR}/argument/*.tpp
+    )
     foreach (v ${HEADERS})
         file(RELATIVE_PATH HEADER_RELATIVE_PATH ${CMAKE_SOURCE_DIR} ${v})
         get_filename_component(HEADER_DIR ${HEADER_RELATIVE_PATH} DIRECTORY)

@@ -21,7 +21,7 @@
 #ifndef COM_GITEE_IVFZHOU_IPASIGNER_DO_SIGN_HPP
 #define COM_GITEE_IVFZHOU_IPASIGNER_DO_SIGN_HPP
 
-#include "arguments.hpp"
+#include "argument/argument.hpp"
 
 namespace com::gitee::ivfzhou::ipasigner {
 

@@ -24,6 +24,7 @@
 #include <cstdlib>
 
 #include "Logger.tpp"
+#include "argument/argument.hpp"
 #include "constants.hpp"
 #include "do_sign.hpp"
 
