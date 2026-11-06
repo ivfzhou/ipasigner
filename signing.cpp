@@ -19,7 +19,7 @@
  *    - Requirements Slot（签名需求表达式，含 Bundle ID 与证书 CN）
  *    - Entitlements Slot（权限配置 XML）
  *    - DER Entitlements Slot（ASN.1 DER 编码的权限配置）
- *    - CodeDirectory Slot（代码哈希目录，支持 SHA1/SHA256 双版本）
+ *    - CodeDirectory Slot（唯一的 SHA256 主版本，对齐 codesign/zsign）
  *    - CMS Signature Slot（基于 OpenSSL CMS 的数字签名）
  * 2. 组装完整的 __LINKEDIT 段 CodeSignature SuperBlob
  * 3. 解析 Mach-O 文件格式并执行单架构签名（支持自动扩展 __LINKEDIT 空间）
@@ -27,6 +27,8 @@
  * 5. 向 Mach-O 注入 LC_LOAD_DYLIB / LC_LOAD_WEAK_DYLIB 加载命令
  */
 
+#include <algorithm>
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -36,6 +38,7 @@
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -65,7 +68,8 @@ namespace com::gitee::ivfzhou::ipasigner {
  *
  * 内部使用 0xfade0c00/0xfade0c01 magic 和 TLV 编码格式，
  * 嵌套表达 identifier "bundleId" and anchor apple generic and
- * (certificate leaf["subject.CN"] = "subjectCN") or certificate 1[field.1.2.840.113635.100.6.1.17]
+ * certificate leaf[subject.CN] = "subjectCN" and
+ * certificate 1[field.1.2.840.113635.100.6.2.1] exists
  *
  * @param bundleId 应用的 Bundle ID 标识符。
  * @param subjectCN 签名证书的主体通用名称（Common Name）。
@@ -128,14 +132,34 @@ static std::string slotBuildRequirements(const std::string_view bundleId, const 
  * @param entitlements 权限配置 XML 字符串，为空时返回空结果。
  * @return 序列化的 Entitlements Slot 二进制数据。
  */
-static std::string slotBuildEntitlements(const std::string_view entitlements) {
+/// 把描述文件里取出的裸 <dict> 片段规范化为完整 XML plist 文档。
+/// CSSLOT_ENTITLEMENTS 必须是完整 plist（裸 <dict> 会被 amfid / codesign 解析
+/// 拒绝），且 DER 槽要基于同一份内容，否则两个槽语义分叉。
+static std::string normalizeEntitlementsPlist(const std::string_view entitlements) {
     if (entitlements.empty()) return {};
+    // 二进制 plist 本身已是完整文档，不能按文本 trim。
+    if (entitlements.starts_with("bplist")) return std::string(entitlements);
+    auto body = StringTrimBlank(entitlements);
+    if (body.empty()) return {};
+    if (body.find("<plist") != std::string::npos) return body;
+    std::string out = R"(<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+)";
+    out += body;
+    out += "\n</plist>\n";
+    return out;
+}
+
+static std::string slotBuildEntitlements(const std::string_view entitlements) {
+    auto plist = normalizeEntitlementsPlist(entitlements);
+    if (plist.empty()) return {};
     auto magic = Swap(CSMAGIC_EMBEDDED_ENTITLEMENTS);
-    auto length = Swap(static_cast<std::uint32_t>(entitlements.size() + 8));
+    auto length = Swap(static_cast<std::uint32_t>(plist.size() + 8));
     std::string out{};
     out.append(reinterpret_cast<const char*>(&magic), 4);
     out.append(reinterpret_cast<const char*>(&length), 4);
-    out.append(entitlements);
+    out.append(plist);
     return out;
 }
 
@@ -177,74 +201,141 @@ static void derLength(std::string& blob, const std::uint64_t len) {
  * @param node pugixml XML 节点（plist 的子节点之一）。
  * @return 该节点的 DER 编码二进制字符串。
  */
-static std::string nodeToDer(const pugi::xml_node& node) {
+/// 按 DER TLV 包装：tag + 长度 + 内容。
+static std::string derWrap(const std::uint8_t tag, std::string content) {
+    std::string out(1, static_cast<char>(tag));
+    derLength(out, content.size());
+    out += content;
+    return out;
+}
+
+/// UTF8String。
+static std::string derString(const std::string_view text) { return derWrap(0x0c, std::string(text)); }
+
+/// 有符号 INTEGER：按最小补码字节数编码（去掉多余的 0x00 / 0xFF 前导字节）。
+static std::string derSignedInt(const std::int64_t value) {
+    auto bits = static_cast<std::uint64_t>(value);
+    std::uint8_t raw[8]{};
+    for (int i = 7; i >= 0; --i) {
+        raw[i] = static_cast<std::uint8_t>(bits & 0xff);
+        bits >>= 8;
+    }
+    int start = 0;
+    if (value >= 0) {
+        while (start < 7 && raw[start] == 0x00 && (raw[start + 1] & 0x80) == 0) ++start;
+    } else {
+        while (start < 7 && raw[start] == 0xff && (raw[start + 1] & 0x80) != 0) ++start;
+    }
+    return derWrap(0x02, std::string(reinterpret_cast<const char*>(raw + start), 8 - start));
+}
+
+/// 超出 int64 的正整数：最高位为 1 时前置 0x00，保证 DER 解释为无符号正数。
+static std::string derUnsignedInt(const std::uint64_t value) {
+    std::uint8_t raw[9]{};
+    auto bits = value;
+    for (int i = 8; i >= 1; --i) {
+        raw[i] = static_cast<std::uint8_t>(bits & 0xff);
+        bits >>= 8;
+    }
+    int start = 0;
+    while (start < 8 && raw[start] == 0x00 && (raw[start + 1] & 0x80) == 0) ++start;
+    return derWrap(0x02, std::string(reinterpret_cast<const char*>(raw + start), 9 - start));
+}
+
+/// plist <integer> -> DER INTEGER，兼容十进制、十六进制、负数与 >INT64_MAX 的正整数。
+static std::string derInteger(const std::string_view text) {
+    auto s = StringTrimBlank(text);
+    int base = 10;
+    if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        base = 16;
+        s.erase(0, 2);
+    } else if (!s.empty() && s.front() == '+') {
+        s.erase(0, 1);
+    }
+    if (s.empty()) return derSignedInt(0);
+    if (std::int64_t signedValue{}; std::from_chars(s.data(), s.data() + s.size(), signedValue, base).ec == std::errc{})
+        return derSignedInt(signedValue);
+    if (std::uint64_t unsignedValue{};
+        std::from_chars(s.data(), s.data() + s.size(), unsignedValue, base).ec == std::errc{})
+        return derUnsignedInt(unsignedValue);
+    Logger::warn("invalid entitlements integer:", std::string(text));
+    return {};
+}
+
+/// plist <data> 的 Base64 解码（忽略空白，遇 '=' 结束）。
+static std::string derBase64Decode(const std::string_view text) {
+    auto valueOf = [](const char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
     std::string out{};
-
-    if (auto name = std::string_view(node.name()); name == PLIST_TAG_TRUE || name == PLIST_TAG_FALSE) {
-        out.append(1, '\x01'); // BOOLEAN tag。
-        out.append(1, '\x01'); // length 1。
-        out.append(1, name == PLIST_TAG_TRUE ? '\x01' : '\x00');
-    } else if (name == PLIST_TAG_INTEGER) {
-        auto text = std::string_view(node.child_value());
-        std::uint64_t val{};
-        for (auto&& c : text) {
-            if (c >= '0' && c <= '9') val = val * 10 + (c - '0');
+    std::uint32_t acc{};
+    int bits{};
+    for (auto c : text) {
+        if (c == '=') break;
+        if (c == '\r' || c == '\n' || c == ' ' || c == '\t') continue;
+        auto v = valueOf(c);
+        if (v < 0) return {};
+        acc = (acc << 6) | static_cast<std::uint32_t>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.append(1, static_cast<char>(acc >> bits & 0xff));
         }
-        out.append(1, '\x02'); // INTEGER tag。
-        // 计算需要的字节数。
-        int byteCount = 0;
-        if (val == 0) {
-            byteCount = 1;
-        } else {
-            auto tmp = val;
-            while (tmp > 0) {
-                ++byteCount;
-                tmp >>= 8;
-            }
-        }
-        derLength(out, byteCount);
-        if (val == 0) {
-            out.append(1, '\x00');
-        } else {
-            for (int i = byteCount - 1; i >= 0; --i) out.append(1, static_cast<char>(val >> (i * 8) & 0xff));
-        }
-    } else if (name == PLIST_TAG_STRING) {
-        auto text = std::string(node.child_value());
-        out.append(1, '\x0c'); // UTF8String tag。
-        derLength(out, text.size());
-        out += text;
-    } else if (name == PLIST_TAG_ARRAY) {
-        std::string arrContent{};
-        for (auto child = node.first_child(); child; child = child.next_sibling()) arrContent += nodeToDer(child);
-        out.append(1, '\x30'); // SEQUENCE tag。
-        derLength(out, arrContent.size());
-        out += arrContent;
-    } else if (name == PLIST_TAG_DICT) {
-        std::string dictContent{};
-        for (auto&& it = node.begin(); it != node.end(); ++it) {
-            if (std::string_view(it->name()) != PLIST_TAG_KEY) continue;
-            auto keyText = std::string(it->child_value());
-            auto valNode = it->next_sibling();
-            if (!valNode) break;
-            ++it;
-            auto valDer = nodeToDer(valNode);
-
-            // 每个键值对是一个 SEQUENCE { UTF8String(key), value }。
-            std::string kvContent{};
-            kvContent.append(1, '\x0c'); // UTF8String tag for key。
-            derLength(kvContent, keyText.size());
-            kvContent += keyText;
-            kvContent += valDer;
-
-            dictContent.append(1, '\x30'); // SEQUENCE tag。
-            derLength(dictContent, kvContent.size());
-            dictContent += kvContent;
-        }
-        out.append(1, '\x31'); // SET tag。
-        derLength(out, dictContent.size());
-        out += dictContent;
     }
     return out;
+}
+
+static std::string nodeToDer(const pugi::xml_node& node) {
+    const auto name = std::string_view(node.name());
+    if (name == PLIST_TAG_TRUE) return derWrap(0x01, std::string(1, '\xff'));
+    if (name == PLIST_TAG_FALSE) return derWrap(0x01, std::string(1, '\0'));
+    if (name == PLIST_TAG_INTEGER) return derInteger(node.child_value());
+    if (name == PLIST_TAG_STRING) return derString(node.child_value());
+    if (name == "data") return derWrap(0x04, derBase64Decode(node.child_value()));
+    if (name == PLIST_TAG_ARRAY) {
+        std::string content{};
+        for (auto child = node.first_child(); child; child = child.next_sibling()) {
+            if (child.type() != pugi::node_element) continue;
+            content += nodeToDer(child);
+        }
+        return derWrap(0x30, std::move(content));
+    }
+    if (name == PLIST_TAG_DICT) {
+        // codesign / CoreEntitlements 按 key 的 UTF-8 字节序输出字典，
+        // Apple Silicon 会用同一规则重算 DER 并与槽内字节比较，顺序不一致会导致安装失败。
+        std::vector<std::pair<std::string, std::string>> pairs{};
+        for (auto child = node.first_child(); child; child = child.next_sibling()) {
+            if (child.type() != pugi::node_element || std::string_view(child.name()) != PLIST_TAG_KEY) continue;
+            auto valueNode = child.next_sibling();
+            while (valueNode && valueNode.type() != pugi::node_element) valueNode = valueNode.next_sibling();
+            if (!valueNode) break;
+            auto valueDer = nodeToDer(valueNode);
+            if (valueDer.empty()) {
+                Logger::warn("unsupported entitlements value for key:", child.child_value());
+                continue;
+            }
+            pairs.emplace_back(std::string(child.child_value()), std::move(valueDer));
+        }
+        std::sort(pairs.begin(), pairs.end(), [](const auto& a, const auto& b) {
+            return std::lexicographical_compare(
+                a.first.begin(), a.first.end(), b.first.begin(), b.first.end(), [](const char x, const char y) {
+                    return static_cast<unsigned char>(x) < static_cast<unsigned char>(y);
+                });
+        });
+        std::string content{};
+        for (auto&& [key, value] : pairs) {
+            auto kv = derString(key);
+            kv += value;
+            content += derWrap(0x30, std::move(kv));
+        }
+        return derWrap(0x31, std::move(content));
+    }
+    return {};
 }
 
 /**
@@ -260,9 +351,11 @@ static std::string nodeToDer(const pugi::xml_node& node) {
 static std::string slotBuildDerEntitlements(const std::string_view entitlements) {
     if (entitlements.empty()) return {};
 
-    // 解析 plist XML。
+    // 与 slotBuildEntitlements 共用同一份规范化 plist，保证两个槽语义一致。
+    auto xml = normalizeEntitlementsPlist(entitlements);
+    if (xml.empty()) return {};
     pugi::xml_document doc{};
-    if (!doc.load_string(entitlements.data())) return {};
+    if (!doc.load_string(xml.c_str())) return {};
 
     // 找到 <plist><dict> 根节点。
     auto dictNode = doc.select_node(std::format("/{}/{}", PLIST_TAG_ROOT, PLIST_TAG_DICT).c_str()).node();
@@ -282,33 +375,21 @@ static std::string slotBuildDerEntitlements(const std::string_view entitlements)
 }
 
 /**
- * @brief 构建 CodeDirectory Slot（CSSLOT_CODEDIRECTORY / CSSLOT_ALTERNATE_CODEDIRECTORIES）。
+ * @brief 构建唯一的主 CodeDirectory Slot（CSSLOT_CODEDIRECTORY，SHA256）。
  *
- * 构建完整的 CodeDirectory Blob，这是 Apple 代码签名的核心数据结构。
- * 按照版本 0x20400 格式组织，包含：
- * - 头部固定字段（magic, version, codeLimit, hashType, pageSize 等）
- * - 可执行段限制与标志（execSegLimit, execSegFlags）
- * - 特殊 Slot 哈希（DER Entitlements、Entitlements、CodeResources、Requirements、Info.plist）
- * - Bundle ID 和 Team ID 标识符
- * - 代码页哈希（按 pageSize 分页，每页计算 SHA1 或 SHA256）
+ * 对齐 zsign / codesign 的 SHA256-only 模式：arm64（M1 及后续芯片）与 iOS 27
+ * 内核按页校验签名，主 CD 必须是 SHA256 且不能额外附带 SHA1 的 alternate CD；
+ * 否则 cdhashes 集合与实际 CD 集合不一致，设备会拒绝安装。
  *
- * @param bAlternate true 构建 SHA256 版本（Alternate），false 构建 SHA1 主版本。
- * @param codeBase 代码区起始指针（Mach-O 文件在内存中的基地址）。
- * @param codeLength 代码区长度（需签名的字节数）。
- * @param execSegLimit 可执行段的内存上限（__TEXT.vmsize）。
- * @param execSegFlags 可执行段标志位（如 CS_EXECSEG_MAIN_BINARY）。
- * @param bundleId 应用的 Bundle ID 标识符。
- * @param teamId 团队标识符（Team ID）。
- * @param infoPlistSHA Info.plist 的 SHA 哈希值（主/备版本对应长度）。
- * @param requirementsSHA Requirements Slot 的 SHA 哈希值。
- * @param codeResourcesSHA CodeResources 的 SHA 哈希值。
- * @param entitlementsSHA Entitlements Slot 的 SHA 哈希值。
- * @param derEntitlementsSHA DER Entitlements Slot 的 SHA 哈希值。
- * @param isExecuteArch 是否为主可执行文件架构（影响特殊 Slot 排列顺序）。
- * @return 序列化的 CodeDirectory Slot 二进制数据，参数无效时返回空。
+ * 特殊槽（从 -n 到 -1）：主可执行文件 7 个（DER、空、XML、空、CodeResources、
+ * Requirements、Info.plist），framework/dylib 只有 3 个（无 entitlements）。
+ *
+ * @param execSegBase __TEXT.fileoff，对齐 codesign。
+ * @param execSegLimit __TEXT.filesize，对齐 codesign。
+ * @param isExecuteArch 是否为主可执行文件架构。
  */
-static std::string slotBuildCodeDirectory(const bool bAlternate, const std::uint8_t* codeBase,
-                                          const std::uint32_t codeLength, const std::uint64_t execSegLimit,
+static std::string slotBuildCodeDirectory(const std::uint8_t* codeBase, const std::uint32_t codeLength,
+                                          const std::uint64_t execSegBase, const std::uint64_t execSegLimit,
                                           const std::uint64_t execSegFlags, const std::string_view bundleId,
                                           const std::string_view teamId, const std::string_view infoPlistSHA,
                                           const std::string_view requirementsSHA,
@@ -323,23 +404,24 @@ static std::string slotBuildCodeDirectory(const bool bAlternate, const std::uint
     cd.magic = Swap(CSMAGIC_CODEDIRECTORY);
     cd.version = Swap(version);
     cd.codeLimit = Swap(codeLength);
-    cd.hashSize = bAlternate ? 32 : 20;
-    cd.hashType = bAlternate ? 2 : 1;
+    cd.hashSize = 32;
+    cd.hashType = 2;
     cd.pageSize = 12;
+    cd.execSegBase = Swap(execSegBase);
     cd.execSegLimit = Swap(execSegLimit);
     cd.execSegFlags = Swap(execSegFlags);
 
     std::string emptySHA(cd.hashSize, '\0');
     std::vector<std::string> specialSlots{};
     if (isExecuteArch) {
-        specialSlots.push_back(derEntitlementsSHA.empty() ? emptySHA : std::string(derEntitlementsSHA));
+        specialSlots.push_back(derEntitlementsSHA.size() == cd.hashSize ? std::string(derEntitlementsSHA) : emptySHA);
+        specialSlots.push_back(emptySHA);
+        specialSlots.push_back(entitlementsSHA.size() == cd.hashSize ? std::string(entitlementsSHA) : emptySHA);
         specialSlots.push_back(emptySHA);
     }
-    specialSlots.push_back(entitlementsSHA.empty() ? emptySHA : std::string(entitlementsSHA));
-    specialSlots.push_back(emptySHA);
-    specialSlots.push_back(codeResourcesSHA.empty() ? emptySHA : std::string(codeResourcesSHA));
-    specialSlots.push_back(requirementsSHA.empty() ? emptySHA : std::string(requirementsSHA));
-    specialSlots.push_back(infoPlistSHA.empty() ? emptySHA : std::string(infoPlistSHA));
+    specialSlots.push_back(codeResourcesSHA.size() == cd.hashSize ? std::string(codeResourcesSHA) : emptySHA);
+    specialSlots.push_back(requirementsSHA.size() == cd.hashSize ? std::string(requirementsSHA) : emptySHA);
+    specialSlots.push_back(infoPlistSHA.size() == cd.hashSize ? std::string(infoPlistSHA) : emptySHA);
 
     std::uint32_t pageSize = 1u << cd.pageSize;
     std::uint32_t pages = codeLength / pageSize;
@@ -374,70 +456,87 @@ static std::string slotBuildCodeDirectory(const bool bAlternate, const std::uint
     return out;
 }
 
+/// 内嵌的 Apple CA 证书（G1~G6 WWDR + 两代 Apple Root）。
+/// 新版签名证书可能由 G2/G4/G5/G6 签发，不能无条件写死 G3。
+static const char* const kAppleCACertificates[] = {
+    CERTIFICATE_APPLE_DEV_CA,    CERTIFICATE_APPLE_DEV_G2_CA, CERTIFICATE_APPLE_DEV_G3_CA, CERTIFICATE_APPLE_DEV_G4_CA,
+    CERTIFICATE_APPLE_DEV_G5_CA, CERTIFICATE_APPLE_DEV_G6_CA, CERTIFICATE_APPLE_ROOT_CA,   CERTIFICATE_APPLE_ROOT_G3_CA,
+};
+
+static X509* parseAppleCACert(const char* pem) {
+    auto bio = BIO_new_mem_buf(pem, -1);
+    if (!bio) return nullptr;
+    auto* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    return cert;
+}
+
+/// 按叶子证书的 Issuer 选择 WWDR 中间证书，再按该中间证书的 Issuer 选择根证书。
+/// 匹配不到时只嵌入叶子，避免把错误的 G3 写入链里导致 macOS/设备校验失败。
+static STACK_OF(X509) * selectAppleCACerts(X509* leaf) {
+    auto chain = sk_X509_new_null();
+    if (!chain) return nullptr;
+
+    X509* intermediate{};
+    for (auto pem : kAppleCACertificates) {
+        auto ca = parseAppleCACert(pem);
+        if (!ca) continue;
+        const bool selfSigned = X509_NAME_cmp(X509_get_subject_name(ca), X509_get_issuer_name(ca)) == 0;
+        if (!selfSigned && X509_NAME_cmp(X509_get_subject_name(ca), X509_get_issuer_name(leaf)) == 0) {
+            sk_X509_push(chain, ca);
+            intermediate = ca;
+            break;
+        }
+        X509_free(ca);
+    }
+    if (!intermediate) {
+        Logger::warn("no matching Apple WWDR intermediate for signing certificate; embedding leaf only");
+        return chain;
+    }
+
+    for (auto pem : kAppleCACertificates) {
+        auto ca = parseAppleCACert(pem);
+        if (!ca) continue;
+        if (X509_NAME_cmp(X509_get_subject_name(ca), X509_get_issuer_name(intermediate)) == 0) {
+            sk_X509_push(chain, ca);
+            break;
+        }
+        X509_free(ca);
+    }
+    return chain;
+}
+
 /**
  * @brief 构建 CMS 签名 Slot（CSSLOT_SIGNATURESLOT）。
  *
- * 使用 OpenSSL CMS API 生成 PKCS#7 detached 签名，签名内容包括：
- * - SHA1 CodeDirectory 哈希（作为 CDHashes plist 属性，OID 1.2.840.113635.100.9.1）
- * - SHA256 CodeDirectory 哈希（作为 ASN.1 SEQUENCE 属性，OID 1.2.840.113635.100.9.2）
- * - Apple WWDR CA G3 和 Apple Root CA 作为证书链
- *
- * 最终结果包装为 CSMAGIC_BLOBWRAPPER 格式。
- *
- * @param cert 用于签名的 X509 证书。
- * @param pkey 对应的私钥。
- * @param codeDirectorySlot 主 CodeDirectory Slot 数据。
- * @param alternateCodeDirectorySlot 备用（SHA256）CodeDirectory Slot 数据。
- * @return 成功返回 CMS 签名的 BlobWrapper 数据，失败返回 std::nullopt。
+ * SHA256-only 模式（对齐 zsign / codesign）：
+ * - detached eContent / messageDigest = 主 CodeDirectory（SHA256 版）原始字节；
+ * - cdhashes plist（OID 1.2.840.113635.100.9.1）只有 1 条，等于 SHA256(CD) 前 20 字节；
+ * - OID 1.2.840.113635.100.9.2 属性 = 完整的 SHA256(CD)（32 字节）；
+ * - 证书链按叶子 Issuer 匹配 WWDR，再匹配对应 Apple Root。
  */
 static std::optional<std::string> slotBuildCMSSignature(X509* cert, EVP_PKEY* pkey,
-                                                        const std::string_view codeDirectorySlot,
-                                                        const std::string_view alternateCodeDirectorySlot) {
-    if (!cert || !pkey) return std::nullopt;
+                                                        const std::string_view codeDirectorySlot) {
+    if (!cert || !pkey || codeDirectorySlot.empty()) return std::nullopt;
 
-    // 计算 CodeDirectory 的 SHA1 和 SHA256。
-    auto cdSHA1 = SHARaw(1, codeDirectorySlot.data(), codeDirectorySlot.size());
-    auto altCdSHA256 = SHARaw(2, alternateCodeDirectorySlot.data(), alternateCodeDirectorySlot.size());
+    auto cdHashSHA256 = SHARaw(2, codeDirectorySlot.data(), codeDirectorySlot.size());
+    if (cdHashSHA256.size() != 32) return std::nullopt;
 
-    // 构建 CDHashes plist（截断到 20 字节）。
-    std::string cdHashesPlist =
-        std::format(R"++(<?xml version="1.0" encoding="UTF-8"?>
+    // 每个条目对应签名中实际存在的一个 CodeDirectory；SHA256-only 模式只写 1 条。
+    std::string cdHashesPlist = std::format(R"++(<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 <key>cdhashes</key>
-<array><data>{}</data><data>{}</data></array>
+<array><data>{}</data></array>
 </dict>
 </plist>
 )++",
-                    Base64Encode(cdSHA1.substr(0, 20)), Base64Encode(altCdSHA256.substr(0, 20)));
+                                            Base64Encode(std::string_view(cdHashSHA256).substr(0, 20)));
 
-    // 加载 Apple CA 证书链：根据签名证书的 issuer 哈希选择对应的中间证书。
-    auto issuerHash = X509_issuer_name_hash(cert);
-    const char* intermediateCert = nullptr;
-    if (issuerHash == 0x817d2f7a) {
-        intermediateCert = CERTIFICATE_APPLE_DEV_CA;
-    } else if (issuerHash == 0x9b16b75c) {
-        intermediateCert = CERTIFICATE_APPLE_DEV_G3_CA;
-    } else {
-        Logger::warn("unknown issuer hash:", std::to_string(issuerHash), ", fallback to G3 CA");
-        intermediateCert = CERTIFICATE_APPLE_DEV_G3_CA;
-    }
-    auto bother1 = BIO_new_mem_buf(intermediateCert, -1);
-    auto bother2 = BIO_new_mem_buf(CERTIFICATE_APPLE_ROOT_CA, -1);
-    if (!bother1 || !bother2) return std::nullopt;
-    ScopeGuard bioGuard{[&] {
-        BIO_free(bother1);
-        BIO_free(bother2);
-    }};
-
-    auto ocert1 = PEM_read_bio_X509(bother1, nullptr, nullptr, nullptr);
-    auto ocert2 = PEM_read_bio_X509(bother2, nullptr, nullptr, nullptr);
-    if (!ocert1 || !ocert2) return std::nullopt;
-
-    auto otherCerts = sk_X509_new_null();
-    sk_X509_push(otherCerts, ocert1);
-    sk_X509_push(otherCerts, ocert2);
+    auto otherCerts = selectAppleCACerts(cert);
+    if (!otherCerts) return std::nullopt;
+    ScopeGuard certsGuard{[&otherCerts] { sk_X509_pop_free(otherCerts, X509_free); }};
 
     auto in = BIO_new_mem_buf(codeDirectorySlot.data(), static_cast<int>(codeDirectorySlot.size()));
     if (!in) return std::nullopt;
@@ -454,35 +553,39 @@ static std::optional<std::string> slotBuildCMSSignature(X509* cert, EVP_PKEY* pk
     // 添加 CDHashes plist 属性 (OID 1.2.840.113635.100.9.1)。
     auto obj1 = OBJ_txt2obj("1.2.840.113635.100.9.1", 1);
     if (!obj1) return std::nullopt;
+    ScopeGuard obj1Guard{[&obj1] { ASN1_OBJECT_free(obj1); }};
     CMS_signed_add1_attr_by_OBJ(si, obj1, 0x04, cdHashesPlist.c_str(), static_cast<int>(cdHashesPlist.size()));
 
-    // 添加 CDHashes SHA256 属性 (OID 1.2.840.113635.100.9.2)。
+    // 添加 CDHash SHA256 属性 (OID 1.2.840.113635.100.9.2)：完整 32 字节。
     std::string sha256Hex{};
-    for (auto c : altCdSHA256) {
+    for (auto c : cdHashSHA256) {
         char buf[4];
         std::snprintf(buf, sizeof(buf), "%02X", static_cast<unsigned char>(c));
         sha256Hex += buf;
     }
     if (auto obj2 = OBJ_txt2obj("1.2.840.113635.100.9.2", 1)) {
+        ScopeGuard obj2Guard{[&obj2] { ASN1_OBJECT_free(obj2); }};
         std::string confStr = "asn1=SEQUENCE:A\n[A]\nC=OBJECT:sha256\nB=FORMAT:HEX,OCT:" + sha256Hex + "\n";
         long errline = -1;
         auto ldapbio = BIO_new(BIO_s_mem());
         auto cnf = NCONF_new(nullptr);
-        BIO_puts(ldapbio, confStr.c_str());
-        NCONF_load_bio(cnf, ldapbio, &errline);
-        BIO_free(ldapbio);
-        if (auto genstr = NCONF_get_string(cnf, "default", "asn1")) {
-            if (auto type256 = ASN1_generate_nconf(genstr, cnf)) {
-                auto attr = X509_ATTRIBUTE_new();
-                X509_ATTRIBUTE_set1_object(attr, obj2);
-                X509_ATTRIBUTE_set1_data(attr, V_ASN1_SEQUENCE, type256->value.asn1_string->data,
-                                         type256->value.asn1_string->length);
-                CMS_signed_add1_attr(si, attr);
-                X509_ATTRIBUTE_free(attr);
-                ASN1_TYPE_free(type256);
+        if (ldapbio && cnf) {
+            BIO_puts(ldapbio, confStr.c_str());
+            NCONF_load_bio(cnf, ldapbio, &errline);
+            if (auto genstr = NCONF_get_string(cnf, "default", "asn1")) {
+                if (auto type256 = ASN1_generate_nconf(genstr, cnf)) {
+                    auto attr = X509_ATTRIBUTE_new();
+                    X509_ATTRIBUTE_set1_object(attr, obj2);
+                    X509_ATTRIBUTE_set1_data(attr, V_ASN1_SEQUENCE, type256->value.asn1_string->data,
+                                             type256->value.asn1_string->length);
+                    CMS_signed_add1_attr(si, attr);
+                    X509_ATTRIBUTE_free(attr);
+                    ASN1_TYPE_free(type256);
+                }
             }
         }
-        NCONF_free(cnf);
+        if (ldapbio) BIO_free(ldapbio);
+        if (cnf) NCONF_free(cnf);
     }
 
     if (!CMS_final(cms, in, nullptr, flags)) return std::nullopt;
@@ -515,63 +618,45 @@ static std::optional<std::string> slotBuildCMSSignature(X509* cert, EVP_PKEY* pk
  * 1. Requirements Slot（签名需求表达式）
  * 2. Entitlements Slot（权限 XML，仅主可执行文件）
  * 3. DER Entitlements Slot（DER 编码权限，仅主可执行文件）
- * 4. CodeDirectory Slot（SHA1 版本）
- * 5. Alternate CodeDirectory Slot（SHA256 版本）
- * 6. CMS Signature Slot（数字签名）
+ * 4. CodeDirectory Slot（唯一的 SHA256 主版本）
+ * 5. CMS Signature Slot（数字签名）
  *
- * 根据 Entitlements 中是否包含 get-task-allow 自动设置 execSegFlags。
+ * 主可执行文件恒置 CS_EXECSEG_MAIN_BINARY；CS_EXECSEG_ALLOW_UNSIGNED 只用于
+ * 调试签名，不应出现在企业分发签名中。
  *
- * @param cert 用于签名的 X509 证书。
- * @param pkey 对应的私钥。
- * @param codeBase 代码区起始指针。
- * @param codeLength 代码区长度。
- * @param execSegLimit 可执行段内存上限。
- * @param isExecute 是否为主可执行文件（决定是否嵌入完整 Entitlements）。
- * @param bundleId Bundle ID 标识符。
- * @param teamId 团队标识符。
- * @param subjectCN 证书主体通用名称（用于 Requirements 表达式）。
- * @param entitlements 权限配置 XML 字符串。
- * @param infoPlistSHA1 Info.plist 的 SHA1 哈希。
+ * @param execSegBase __TEXT 文件内偏移（fileoff）。
+ * @param execSegLimit __TEXT 文件大小（filesize）。
  * @param infoPlistSHA256 Info.plist 的 SHA256 哈希。
- * @param codeResourcesSHA1 CodeResources 的 SHA1 哈希。
  * @param codeResourcesSHA256 CodeResources 的 SHA256 哈希。
  * @return 序列化的完整 SuperBlob 二进制数据。
  */
 static std::string buildCodeSignature(X509* cert, EVP_PKEY* pkey, const std::uint8_t* codeBase,
-                                      const std::uint32_t codeLength, const std::uint64_t execSegLimit,
-                                      const bool isExecute, const std::string_view bundleId,
-                                      const std::string_view teamId, const std::string_view subjectCN,
-                                      const std::string_view entitlements, const std::string_view infoPlistSHA1,
-                                      const std::string_view infoPlistSHA256, const std::string_view codeResourcesSHA1,
+                                      const std::uint32_t codeLength, const std::uint64_t execSegBase,
+                                      const std::uint64_t execSegLimit, const bool isExecute,
+                                      const std::string_view bundleId, const std::string_view teamId,
+                                      const std::string_view subjectCN, const std::string_view entitlements,
+                                      const std::string_view infoPlistSHA256,
                                       const std::string_view codeResourcesSHA256) {
-    std::string emptyEntitlements = R"++(<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict/></plist>)++";
-
     auto reqSlot = slotBuildRequirements(bundleId, subjectCN);
-    auto entSlot = slotBuildEntitlements(isExecute ? entitlements : std::string_view(emptyEntitlements));
-    auto derEntSlot = slotBuildDerEntitlements(isExecute ? entitlements : std::string_view{});
 
-    auto [reqSHA1, reqSHA256] =
-        reqSlot.empty() ? std::pair(std::string(20, '\0'), std::string(32, '\0')) : SHASumRaw(reqSlot);
-    auto [entSHA1, entSHA256] =
-        entSlot.empty() ? std::pair(std::string(20, '\0'), std::string(32, '\0')) : SHASumRaw(entSlot);
-    auto [derEntSHA1, derEntSHA256] =
-        derEntSlot.empty() ? std::pair(std::string(20, '\0'), std::string(32, '\0')) : SHASumRaw(derEntSlot);
+    // framework/dylib 不写 entitlements 槽：空 XML + 无 DER 会在 Apple Silicon /
+    // iOS 27 按页校验时被拒。
+    auto entSlot = isExecute ? slotBuildEntitlements(entitlements) : std::string{};
+    auto derEntSlot = isExecute ? slotBuildDerEntitlements(entitlements) : std::string{};
 
-    std::uint64_t execSegFlags{};
-    if (!entSlot.empty() && entSlot.size() > 8) {
-        if (std::string_view entData(entSlot.data() + 8, entSlot.size() - 8);
-            entData.find("<key>get-task-allow</key>") != std::string_view::npos)
-            execSegFlags = CS_EXECSEG_MAIN_BINARY | CS_EXECSEG_ALLOW_UNSIGNED;
-    }
+    auto sha256Of = [](const std::string& data) {
+        return data.empty() ? std::string(32, '\0') : SHARaw(2, data.data(), data.size());
+    };
+    auto reqSHA256 = sha256Of(reqSlot);
+    auto entSHA256 = sha256Of(entSlot);
+    auto derEntSHA256 = sha256Of(derEntSlot);
 
-    auto cdSlot = slotBuildCodeDirectory(false, codeBase, codeLength, execSegLimit, execSegFlags, bundleId, teamId,
-                                         infoPlistSHA1, reqSHA1, codeResourcesSHA1, entSHA1, derEntSHA1, isExecute);
-    auto altCdSlot =
-        slotBuildCodeDirectory(true, codeBase, codeLength, execSegLimit, execSegFlags, bundleId, teamId,
+    const std::uint64_t execSegFlags = isExecute ? CS_EXECSEG_MAIN_BINARY : 0;
+
+    auto cdSlot =
+        slotBuildCodeDirectory(codeBase, codeLength, execSegBase, execSegLimit, execSegFlags, bundleId, teamId,
                                infoPlistSHA256, reqSHA256, codeResourcesSHA256, entSHA256, derEntSHA256, isExecute);
-    auto cmsSlotOpt = slotBuildCMSSignature(cert, pkey, cdSlot, altCdSlot);
+    auto cmsSlotOpt = slotBuildCMSSignature(cert, pkey, cdSlot);
     std::string cmsSlot = cmsSlotOpt ? *cmsSlotOpt : std::string{};
 
     // 计算 blob 数量和长度。
@@ -580,7 +665,6 @@ static std::string buildCodeSignature(X509* cert, EVP_PKEY* pkey, const std::uin
     if (!reqSlot.empty()) blobs.push_back({CSSLOT_REQUIREMENTS, &reqSlot});
     if (!entSlot.empty()) blobs.push_back({CSSLOT_ENTITLEMENTS, &entSlot});
     if (!derEntSlot.empty()) blobs.push_back({CSSLOT_DER_ENTITLEMENTS, &derEntSlot});
-    if (!altCdSlot.empty()) blobs.push_back({CSSLOT_ALTERNATE_CODEDIRECTORIES, &altCdSlot});
     if (!cmsSlot.empty()) blobs.push_back({CSSLOT_SIGNATURESLOT, &cmsSlot});
 
     std::uint32_t headerLen = sizeof(CSSuperBlob) + static_cast<std::uint32_t>(blobs.size()) * sizeof(CSBlobIndex);
@@ -627,7 +711,6 @@ static std::string buildCodeSignature(X509* cert, EVP_PKEY* pkey, const std::uin
  * @param teamId 团队 ID。
  * @param subjectCN 证书主体名称。
  * @param entitlements 权限配置 XML。
- * @param infoPlistSHA1 Info.plist SHA1 哈希。
  * @param infoPlistSHA256 Info.plist SHA256 哈希。
  * @param codeResourcesData CodeResources 文件内容（用于计算哈希）。
  * @return 成功返回 true，失败返回 false。
@@ -635,112 +718,193 @@ static std::string buildCodeSignature(X509* cert, EVP_PKEY* pkey, const std::uin
 static bool signSingleArch(std::string& data, const std::uint32_t archOffset, const std::uint32_t archLength,
                            X509* cert, EVP_PKEY* pkey, const std::string_view bundleId, const std::string_view teamId,
                            const std::string_view subjectCN, const std::string_view entitlements,
-                           const std::string_view infoPlistSHA1, const std::string_view infoPlistSHA256,
-                           const std::string_view codeResourcesData) {
+                           const std::string_view infoPlistSHA256, const std::string_view codeResourcesData) {
     auto base = reinterpret_cast<std::uint8_t*>(data.data()) + archOffset;
     auto length = archLength;
     auto header = reinterpret_cast<MachHeader*>(base);
     bool is64 = header->magic == MH_MAGIC_64_VAL || header->magic == MH_CIGAM_64_VAL;
     bool bigEndian = header->magic == MH_CIGAM_VAL || header->magic == MH_CIGAM_64_VAL;
     auto BO = [bigEndian](const std::uint32_t v) -> std::uint32_t { return bigEndian ? Swap(v) : v; };
+    auto BO64 = [bigEndian](const std::uint64_t v) -> std::uint64_t { return bigEndian ? Swap(v) : v; };
     std::uint32_t headerSize = is64 ? sizeof(MachHeader64) : sizeof(MachHeader);
     bool isExecute = BO(header->filetype) == MH_EXECUTE_VAL;
 
+    if (length < headerSize + sizeof(LoadCommand)) {
+        Logger::error("mach-o slice is too small");
+        return false;
+    }
+
+    // 逐条扫描 load commands。全部用「相对 base 的偏移」记录，因为后续
+    // data.insert() 会重新分配缓冲区，裸指针会失效。
     std::uint32_t codeLength = length % 16 == 0 ? length : length + 16 - length % 16;
-    std::uint8_t* signBase{};
+    std::uint64_t execSegBase{};
     std::uint64_t execSegLimit{};
-    std::uint8_t* linkEditSeg{};
+    std::uint32_t linkEditOff{}; ///< 0 表示没有 __LINKEDIT。
+    std::uint32_t csCmdOff{}; ///< 0 表示没有 LC_CODE_SIGNATURE。
+    std::uint32_t originalDataSize{};
+    std::uint32_t minDataOffset = length; ///< load commands 之后第一段文件数据的偏移。
+    bool linkEditIs64 = false;
 
     auto pLC = base + headerSize;
     for (std::uint32_t i{}; i < BO(header->ncmds); ++i) {
         auto lc = reinterpret_cast<LoadCommand*>(pLC);
-        if (auto cmd = BO(lc->cmd); cmd == LC_SEGMENT_VAL) {
-            auto seg = reinterpret_cast<SegmentCommand*>(pLC);
-            if (std::strcmp(seg->segname, "__TEXT") == 0) execSegLimit = seg->vmsize;
-            if (std::strcmp(seg->segname, "__LINKEDIT") == 0) linkEditSeg = pLC;
-        } else if (cmd == LC_SEGMENT_64_VAL) {
-            auto seg = reinterpret_cast<SegmentCommand64*>(pLC);
-            if (std::strcmp(seg->segname, "__TEXT") == 0) execSegLimit = seg->vmsize;
-            if (std::strcmp(seg->segname, "__LINKEDIT") == 0) linkEditSeg = pLC;
+        const auto cmd = BO(lc->cmd);
+        const auto cmdsize = BO(lc->cmdsize);
+        const auto lcOff = static_cast<std::uint32_t>(pLC - base);
+        if (cmdsize < sizeof(LoadCommand) || static_cast<std::uint64_t>(lcOff) + cmdsize > length) {
+            Logger::error("invalid mach-o load command size");
+            return false;
+        }
+        if (cmd == LC_SEGMENT_VAL || cmd == LC_SEGMENT_64_VAL) {
+            const bool segIs64 = cmd == LC_SEGMENT_64_VAL;
+            const char* segName{};
+            std::uint32_t nsects{};
+            std::uint64_t fileoff{};
+            if (segIs64) {
+                auto seg = reinterpret_cast<SegmentCommand64*>(pLC);
+                segName = seg->segname;
+                nsects = BO(seg->nsects);
+                fileoff = BO64(seg->fileoff);
+                if (std::strcmp(segName, "__TEXT") == 0) {
+                    execSegBase = fileoff;
+                    execSegLimit = BO64(seg->filesize);
+                }
+            } else {
+                auto seg = reinterpret_cast<SegmentCommand*>(pLC);
+                segName = seg->segname;
+                nsects = BO(seg->nsects);
+                fileoff = BO(seg->fileoff);
+                if (std::strcmp(segName, "__TEXT") == 0) {
+                    execSegBase = fileoff;
+                    execSegLimit = BO(seg->filesize);
+                }
+            }
+            if (std::strcmp(segName, "__LINKEDIT") == 0) {
+                linkEditOff = lcOff;
+                linkEditIs64 = segIs64;
+            }
+            if (fileoff > 0 && fileoff < minDataOffset) minDataOffset = static_cast<std::uint32_t>(fileoff);
+            const std::size_t sectSize = segIs64 ? sizeof(Section64) : sizeof(Section);
+            const std::size_t sectBase = segIs64 ? sizeof(SegmentCommand64) : sizeof(SegmentCommand);
+            if (sectBase + static_cast<std::uint64_t>(nsects) * sectSize <= cmdsize) {
+                for (std::uint32_t j{}; j < nsects; ++j) {
+                    auto off = segIs64 ? BO(reinterpret_cast<Section64*>(pLC + sectBase + sectSize * j)->offset)
+                                       : BO(reinterpret_cast<Section*>(pLC + sectBase + sectSize * j)->offset);
+                    if (off > 0 && off < minDataOffset) minDataOffset = off;
+                }
+            }
         } else if (cmd == LC_CODE_SIGNATURE_VAL) {
             auto csCmd = reinterpret_cast<CodeSignatureCommand*>(pLC);
             codeLength = BO(csCmd->dataoff);
-            signBase = base + codeLength;
+            originalDataSize = BO(csCmd->datasize);
+            csCmdOff = lcOff;
         }
-        pLC += BO(lc->cmdsize);
+        pLC += cmdsize;
     }
 
-    if (!signBase) {
-        Logger::error("no CodeSignature segment found, file is not signed");
-        return false;
+    // 未签名的 Mach-O 没有 LC_CODE_SIGNATURE：在 load commands 尾部的 header
+    // padding 中补一条，并同步递增 ncmds/sizeofcmds。
+    if (csCmdOff == 0) {
+        const auto usedEnd = static_cast<std::uint64_t>(headerSize) + BO(header->sizeofcmds);
+        if (usedEnd > length) {
+            Logger::error("mach-o load commands exceed slice size");
+            return false;
+        }
+        const auto freeSpace = minDataOffset > usedEnd ? minDataOffset - usedEnd : 0;
+        if (freeSpace < sizeof(CodeSignatureCommand)) {
+            Logger::error("not enough header padding to add LC_CODE_SIGNATURE");
+            return false;
+        }
+        // 签名起点需 16 字节对齐；补齐的字节必须真实存在，否则首次计算
+        // CodeDirectory 哈希时会越界读。新增长度由 SignMachOFile 的 grown 统一
+        // 计入 FatArch 的 size/offset 修正。
+        if (codeLength > length) {
+            data.insert(archOffset + length, codeLength - length, '\0');
+            length = codeLength;
+            base = reinterpret_cast<std::uint8_t*>(data.data()) + archOffset;
+            header = reinterpret_cast<MachHeader*>(base);
+        }
+        auto cs = reinterpret_cast<CodeSignatureCommand*>(base + usedEnd);
+        cs->cmd = BO(LC_CODE_SIGNATURE_VAL);
+        cs->cmdsize = BO(static_cast<std::uint32_t>(sizeof(CodeSignatureCommand)));
+        cs->dataoff = BO(codeLength);
+        cs->datasize = 0;
+        csCmdOff = static_cast<std::uint32_t>(reinterpret_cast<std::uint8_t*>(cs) - base);
+        header->ncmds = BO(BO(header->ncmds) + 1);
+        header->sizeofcmds = BO(BO(header->sizeofcmds) + static_cast<std::uint32_t>(sizeof(CodeSignatureCommand)));
+        Logger::debug("added LC_CODE_SIGNATURE load command for unsigned mach-o");
     }
 
-    auto [crSHA1, crSHA256] = codeResourcesData.empty() ? std::pair(std::string(20, '\0'), std::string(32, '\0'))
-                                                        : SHASumRaw(codeResourcesData);
+    auto crSHA256 = codeResourcesData.empty() ? std::string(32, '\0')
+                                              : SHARaw(2, codeResourcesData.data(), codeResourcesData.size());
 
-    auto blob = buildCodeSignature(cert, pkey, base, codeLength, execSegLimit, isExecute, bundleId, teamId, subjectCN,
-                                   entitlements, infoPlistSHA1, infoPlistSHA256, crSHA1, crSHA256);
+    auto blob = buildCodeSignature(cert, pkey, base, codeLength, execSegBase, execSegLimit, isExecute, bundleId, teamId,
+                                   subjectCN, entitlements, infoPlistSHA256, crSHA256);
     if (blob.empty()) {
         Logger::error("failed to build CodeSignature");
         return false;
     }
 
-    // 空间不足：扩展 __LINKEDIT 并重建文件。
-    if (static_cast<std::int64_t>(length) - codeLength < static_cast<std::int64_t>(blob.size())) {
+    // 第一次生成的 blob 只用于估算所需空间；最终签名必须在所有 header 修改
+    // 完成后重新生成（见下方说明）。
+    const auto estimatedSize = static_cast<std::uint32_t>(blob.size());
+    std::uint32_t signatureSize = estimatedSize;
+    if (static_cast<std::int64_t>(length) - codeLength < static_cast<std::int64_t>(estimatedSize)) {
         Logger::debug("CodeSignature space insufficient, expanding file");
-        if (!linkEditSeg) {
+        if (linkEditOff == 0) {
             Logger::error("cannot find __LINKEDIT segment to expand");
             return false;
         }
 
         auto byteAlign = [](const std::uint32_t v, const std::uint32_t a) -> std::uint32_t { return v + (a - v % a); };
-        std::uint32_t newArchLength = codeLength + byteAlign((codeLength / 4096 + 1) * (20 + 32), 4096) + 32768;
-        if (newArchLength <= length) newArchLength = codeLength + static_cast<std::uint32_t>(blob.size()) + 4096;
+        // SHA256-only：每页只有 32 字节哈希，不再为 SHA1 备用 CD 预留空间。
+        std::uint32_t newArchLength = codeLength + byteAlign((codeLength / 4096 + 1) * 32, 4096) + 32768;
+        if (newArchLength <= length) newArchLength = codeLength + estimatedSize + 4096;
         std::uint32_t extraBytes = newArchLength - length;
 
-        // 扩展 __LINKEDIT 段。
-        // 重新获取指针（base 可能因 data 重新分配失效）。
-        auto lcCmd = BO(reinterpret_cast<LoadCommand*>(linkEditSeg)->cmd);
-        auto linkEditOff = static_cast<std::uint32_t>(linkEditSeg - base);
-
-        // 在文件末尾追加空间。
-        auto insertPos = archOffset + length;
-        data.insert(insertPos, extraBytes, '\0');
-        // 重新获取 base。
+        // 在 slice 末尾追加空间（Fat 后续 slice 由 SignMachOFile 统一平移）。
+        data.insert(archOffset + length, extraBytes, '\0');
         base = reinterpret_cast<std::uint8_t*>(data.data()) + archOffset;
+        length = newArchLength;
 
-        // 更新 __LINKEDIT 段大小。
+        // 用相对偏移重新定位 __LINKEDIT，扩展其文件/虚拟大小。
         auto linkEdit = base + linkEditOff;
-        if (lcCmd == LC_SEGMENT_VAL) {
+        if (!linkEditIs64) {
             auto seg = reinterpret_cast<SegmentCommand*>(linkEdit);
             seg->vmsize = BO(byteAlign(BO(seg->vmsize) + extraBytes, 4096));
             seg->filesize = BO(BO(seg->filesize) + extraBytes);
         } else {
             auto seg = reinterpret_cast<SegmentCommand64*>(linkEdit);
-            auto oldVm = BO(seg->vmsize);
-            seg->vmsize = BO(byteAlign(oldVm + extraBytes, 4096));
-            seg->filesize = BO(BO(seg->filesize) + static_cast<std::uint64_t>(extraBytes));
+            auto alignedVm = BO64(seg->vmsize) + extraBytes;
+            alignedVm += (4096 - alignedVm % 4096) % 4096;
+            seg->vmsize = BO64(alignedVm);
+            seg->filesize = BO64(BO64(seg->filesize) + extraBytes);
         }
+        signatureSize = newArchLength - codeLength;
+    } else {
+        // 未扩展时保留原签名区大小，但至少要覆盖本次写入的 blob，
+        // 否则重签名后 datasize 可能小于实际签名数据。
+        signatureSize = std::min(std::max(originalDataSize, estimatedSize), length - codeLength);
+    }
 
-        // 更新 LC_CODE_SIGNATURE 的 datasize。
-        pLC = base + headerSize;
-        for (std::uint32_t i = 0; i < BO(reinterpret_cast<MachHeader*>(base)->ncmds); ++i) {
-            auto lc = reinterpret_cast<LoadCommand*>(pLC);
-            if (BO(lc->cmd) == LC_CODE_SIGNATURE_VAL) {
-                auto cs = reinterpret_cast<CodeSignatureCommand*>(pLC);
-                cs->datasize = BO(newArchLength - codeLength);
-                break;
-            }
-            pLC += BO(lc->cmdsize);
-        }
+    // 关键：LC_CODE_SIGNATURE 的 dataoff/datasize 位于 load commands 区，属于
+    // CodeDirectory 页哈希覆盖范围 [0, codeLimit)。必须在生成最终 CD 之前写完，
+    // 否则「签名后再改自身」会让 codesign --verify 报
+    // "code or signature have been modified"。
+    auto cs = reinterpret_cast<CodeSignatureCommand*>(base + csCmdOff);
+    cs->dataoff = BO(codeLength);
+    cs->datasize = BO(signatureSize);
 
-        // 重新构建签名（因为代码区数据变了需要重新计算哈希）。
-        blob = buildCodeSignature(cert, pkey, base, codeLength, execSegLimit, isExecute, bundleId, teamId, subjectCN,
-                                  entitlements, infoPlistSHA1, infoPlistSHA256, crSHA1, crSHA256);
-        if (blob.empty()) {
-            Logger::error("failed to rebuild CodeSignature after expansion");
-            return false;
-        }
+    // 所有对 [0, codeLength) 的修改都已完成，用最终文件内容生成签名。
+    blob = buildCodeSignature(cert, pkey, base, codeLength, execSegBase, execSegLimit, isExecute, bundleId, teamId,
+                              subjectCN, entitlements, infoPlistSHA256, crSHA256);
+    if (blob.empty()) {
+        Logger::error("failed to rebuild CodeSignature after header update");
+        return false;
+    }
+    if (blob.size() > signatureSize) {
+        Logger::error("CodeSignature blob exceeds reserved signature space");
+        return false;
     }
 
     std::memcpy(reinterpret_cast<std::uint8_t*>(data.data()) + archOffset + codeLength, blob.data(), blob.size());
@@ -867,7 +1031,7 @@ static bool injectDyLibSingleArch(uint8_t* base, const std::string_view dylibPat
  */
 bool SignMachOFile(const std::filesystem::path& filePath, X509* cert, EVP_PKEY* pkey, const std::string_view bundleId,
                    const std::string_view teamId, const std::string_view subjectCN, const std::string_view entitlements,
-                   const std::string_view infoPlistSHA1, const std::string_view infoPlistSHA256,
+                   [[maybe_unused]] const std::string_view infoPlistSHA1, const std::string_view infoPlistSHA256,
                    const std::string_view codeResourcesData) {
     // 读取整个文件到内存。
     auto dataOpt = ReadFile(filePath);
@@ -891,22 +1055,41 @@ bool SignMachOFile(const std::filesystem::path& filePath, X509* cert, EVP_PKEY* 
 
     bool ok{};
     if (magic == FAT_MAGIC_VAL || magic == FAT_CIGAM_VAL) {
-        auto fatHeader = reinterpret_cast<FatHeader*>(base);
-        auto nArch = magic == FAT_MAGIC_VAL ? fatHeader->nfat_arch : Swap(fatHeader->nfat_arch);
+        // 以宿主字节序读到的 magic 为 FAT_MAGIC_VAL 时字段是宿主序，
+        // 否则（标准 fat 头在小端机上读作 FAT_CIGAM_VAL）字段为大端，需要 Swap。
+        const bool fatNeedsSwap = magic != FAT_MAGIC_VAL;
+        auto fatBO = [fatNeedsSwap](const std::uint32_t v) { return fatNeedsSwap ? Swap(v) : v; };
+        auto nArch = fatBO(reinterpret_cast<FatHeader*>(base)->nfat_arch);
         for (std::uint32_t i{}; i < nArch; ++i) {
             auto arch = reinterpret_cast<FatArch*>(base + sizeof(FatHeader) + sizeof(FatArch) * i);
-            auto archOffset = magic == FAT_MAGIC_VAL ? arch->offset : Swap(arch->offset);
-            if (auto archSize = magic == FAT_MAGIC_VAL ? arch->size : Swap(arch->size);
-                !signSingleArch(data, archOffset, archSize, cert, pkey, effectiveBundleId, teamId, subjectCN,
-                                entitlements, infoPlistSHA1, infoPlistSHA256, codeResourcesData))
+            auto archOffset = fatBO(arch->offset);
+            auto archSize = fatBO(arch->size);
+            auto sizeBefore = data.size();
+            if (!signSingleArch(data, archOffset, archSize, cert, pkey, effectiveBundleId, teamId, subjectCN,
+                                entitlements, infoPlistSHA256, codeResourcesData))
                 return false;
             // 重新获取 base（data 可能因扩展而重新分配）。
             base = reinterpret_cast<std::uint8_t*>(data.data());
+            // 某个 slice 扩展后必须同步修正 FatArch 表：当前 slice 变大，
+            // 后续 slice 整体后移，否则后续架构会解析到错误位置。
+            if (auto grown = static_cast<std::uint32_t>(data.size() - sizeBefore); grown > 0) {
+                for (std::uint32_t j{}; j < nArch; ++j) {
+                    auto cur = reinterpret_cast<FatArch*>(base + sizeof(FatHeader) + sizeof(FatArch) * j);
+                    auto off = fatBO(cur->offset);
+                    auto sz = fatBO(cur->size);
+                    if (j == i)
+                        sz += grown;
+                    else if (j > i)
+                        off += grown;
+                    cur->offset = fatBO(off);
+                    cur->size = fatBO(sz);
+                }
+            }
         }
         ok = true;
     } else if (magic == MH_MAGIC_VAL || magic == MH_CIGAM_VAL || magic == MH_MAGIC_64_VAL || magic == MH_CIGAM_64_VAL) {
         ok = signSingleArch(data, 0, fileSize, cert, pkey, effectiveBundleId, teamId, subjectCN, entitlements,
-                            infoPlistSHA1, infoPlistSHA256, codeResourcesData);
+                            infoPlistSHA256, codeResourcesData);
     } else {
         Logger::error("invalid mach-o file magic:", std::to_string(magic));
         return false;
@@ -946,12 +1129,12 @@ bool InjectDyLib(const std::filesystem::path& filePath, const std::string_view d
 
     bool ok = false;
     if (magic == FAT_MAGIC_VAL || magic == FAT_CIGAM_VAL) {
-        auto fatHeader = reinterpret_cast<FatHeader*>(base);
-        auto nArch = magic == FAT_MAGIC_VAL ? fatHeader->nfat_arch : Swap(fatHeader->nfat_arch);
+        const bool fatNeedsSwap = magic != FAT_MAGIC_VAL;
+        auto fatBO = [fatNeedsSwap](const std::uint32_t v) { return fatNeedsSwap ? Swap(v) : v; };
+        auto nArch = fatBO(reinterpret_cast<FatHeader*>(base)->nfat_arch);
         for (std::uint32_t i{}; i < nArch; ++i) {
             auto arch = reinterpret_cast<FatArch*>(base + sizeof(FatHeader) + sizeof(FatArch) * i);
-            if (auto archOffset = magic == FAT_MAGIC_VAL ? arch->offset : Swap(arch->offset);
-                !injectDyLibSingleArch(base + archOffset, dylibPath, weakInject))
+            if (auto archOffset = fatBO(arch->offset); !injectDyLibSingleArch(base + archOffset, dylibPath, weakInject))
                 return false;
         }
         ok = true;

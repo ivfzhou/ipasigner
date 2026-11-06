@@ -28,17 +28,37 @@
  * 每个步骤封装为独立的 static 函数，通过返回退出码指示成功或失败。
  */
 
+#include <cerrno>
+#include <charconv>
 #include <chrono>
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
+#include <mutex>
 #include <set>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <signal.h>
+#include <unistd.h>
+#endif
+
 #include "Configuration.hpp"
 #include "Logger.tpp"
+#include "ScopeGuard.hpp"
 #include "SignAsset.hpp"
 #include "SignInfo.hpp"
 #include "argument/argument.hpp"
@@ -50,6 +70,123 @@
 #include "signing.hpp"
 
 namespace com::gitee::ivfzhou::ipasigner {
+
+namespace {
+
+/// 当前进程正在使用的 IPA 解压临时目录。做成全局状态，是为了让 Ctrl+C /
+/// SIGTERM 回调（不经过栈展开）也能清理；RAII guard 与回调共用同一个入口。
+std::mutex g_tempDirMutex{};
+std::filesystem::path g_activeTempDir{};
+
+/// 删除当前临时目录并清空登记，保证重复调用（guard + 显式清理 + 信号回调）幂等。
+/// 必须是 noexcept：ScopeGuard 与信号回调都在 noexcept 上下文中调用它。
+void cleanupActiveTempDir() noexcept {
+    try {
+        std::filesystem::path dir{};
+        {
+            // 信号回调可能在主线程正持锁的瞬间触发：用 try_lock 避免死锁；
+            // 拿不到锁就放弃，残留目录由下次启动的 cleanupStaleTempDirs 回收。
+            std::unique_lock lock(g_tempDirMutex, std::try_to_lock);
+            if (!lock.owns_lock()) return;
+            dir.swap(g_activeTempDir);
+        }
+        if (dir.empty()) return;
+        std::error_code ec{};
+        std::filesystem::remove_all(dir, ec);
+        if (ec)
+            Logger::warn("failed to remove temporary directory:", PathToUtf8(dir), ec.message());
+        else
+            Logger::debug("removed temporary directory:", PathToUtf8(dir));
+    } catch (...) {
+        // 清理函数不得向 noexcept 析构 / 信号回调抛出异常。
+    }
+}
+
+void setActiveTempDir(const std::filesystem::path& dir) noexcept {
+    try {
+        std::lock_guard lock(g_tempDirMutex);
+        g_activeTempDir = dir;
+    } catch (...) {
+    }
+}
+
+std::uint64_t currentPid() noexcept {
+#ifdef _WIN32
+    return static_cast<std::uint64_t>(GetCurrentProcessId());
+#else
+    return static_cast<std::uint64_t>(::getpid());
+#endif
+}
+
+bool pidAlive(const std::uint64_t pid) noexcept {
+#ifdef _WIN32
+    auto handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+    if (!handle) return false;
+    DWORD code{};
+    const bool alive = GetExitCodeProcess(handle, &code) != 0 && code == STILL_ACTIVE;
+    CloseHandle(handle);
+    return alive;
+#else
+    if (::kill(static_cast<pid_t>(pid), 0) == 0) return true;
+    return errno == EPERM;
+#endif
+}
+
+/// 兜底清理：进程被强杀（kill -9 / TerminateProcess / 断电）时来不及执行
+/// RAII，残留目录会在下次启动时按「目录名里的 PID 已不存在」被回收。
+/// 目录名形如 <base>_<pid> 或 <base>_<pid>_<n>。
+void cleanupStaleTempDirs(const std::string& base) noexcept {
+    std::error_code ec{};
+    auto tempRoot = std::filesystem::temp_directory_path(ec);
+    if (ec) return;
+    const std::string prefix = base + "_";
+    for (auto&& entry : std::filesystem::directory_iterator(tempRoot, ec)) {
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        const auto name = entry.path().filename().string();
+        if (name.rfind(prefix, 0) != 0) continue;
+        const auto rest = std::string_view(name).substr(prefix.size());
+        const auto pidText = rest.substr(0, rest.find('_'));
+        std::uint64_t pid{};
+        const auto [end, err] = std::from_chars(pidText.data(), pidText.data() + pidText.size(), pid);
+        // 过小的 PID 多半是旧版本留下的递增序号，跳过以免误删活跃实例。
+        if (err != std::errc{} || end != pidText.data() + pidText.size() || pid < 100) continue;
+        if (pid == currentPid() || pidAlive(pid)) continue;
+        std::error_code rec{};
+        std::filesystem::remove_all(entry.path(), rec);
+    }
+}
+
+#ifdef _WIN32
+BOOL WINAPI tempDirConsoleHandler(const DWORD type) {
+    if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT || type == CTRL_CLOSE_EVENT) cleanupActiveTempDir();
+    return FALSE; // 交给系统默认处理，进程随后退出
+}
+#else
+void tempDirSignalHandler(const int sig) {
+    cleanupActiveTempDir();
+    std::_Exit(128 + sig);
+}
+#endif
+
+void installTempDirCleanupHandlers() noexcept {
+    static std::once_flag once{};
+    std::call_once(once, [] {
+#ifdef _WIN32
+        SetConsoleCtrlHandler(tempDirConsoleHandler, TRUE);
+#else
+        struct sigaction sa {};
+        sa.sa_handler = tempDirSignalHandler;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGINT, &sa, nullptr);
+        sigaction(SIGTERM, &sa, nullptr);
+#endif
+    });
+}
+
+} // namespace
 
 /**
  * @brief 解析并校验 YAML 配置文件。
@@ -272,6 +409,7 @@ static int readAppxProvisionFile(std::map<std::string, std::string>& appxProvisi
  * @return 0 表示成功，非 0 表示失败的退出码。
  */
 static int getAppxProvisionBundleIds(std::map<std::string, std::string>& appxProvisionBundleIds,
+                                     std::map<std::string, std::string>& appxProvisionEntitlements,
                                      const std::map<std::string, std::string>& appxProvisions) {
     // 获取描述文件的 bundle。
     Logger::debug("get appx provision bundles");
@@ -292,6 +430,9 @@ static int getAppxProvisionBundleIds(std::map<std::string, std::string>& appxPro
             return EXIT_CODE_BUNDLE_NOT_FOUND;
         }
         Logger::debug("appx is", key, "bundle id is", *bundleIdOpt);
+        // 插件（appex）必须使用自己描述文件里的 entitlements；套用主 App 的
+        // entitlements 会让 Apple Silicon 校验 DER 时失败。
+        appxProvisionEntitlements[key] = *entitlementsOpt;
         appxProvisionBundleIds[key] = std::move(*bundleIdOpt);
     }
 
@@ -309,17 +450,28 @@ static int getAppxProvisionBundleIds(std::map<std::string, std::string>& appxPro
  * @return 0 表示成功，非 0 表示失败的退出码。
  */
 static int unzipIPAFile(std::filesystem::path& ipaDir, const std::string& filePath) {
-    // 寻找空闲文件夹。
-    ipaDir = std::filesystem::temp_directory_path() / std::filesystem::path(filePath).stem();
-    auto baseName = std::filesystem::path(filePath).stem().string();
+    const auto tempRoot = std::filesystem::temp_directory_path();
+    const auto baseName = std::filesystem::path(filePath).stem().string();
+
+    // 历史残留的回收在 DoSign 读到 cfg.ipaFilePath 后就执行，见 Stage 1。
+
+    // 目录名带 PID：并发实例不冲突，崩溃后下次启动也能按 PID 判定并回收。
+    const std::string prefix = baseName + "_" + std::to_string(currentPid());
+    ipaDir = tempRoot / prefix;
     for (int i = 1; std::filesystem::exists(ipaDir); i++) {
-        ipaDir = std::filesystem::temp_directory_path() / (baseName + "_" + std::to_string(i));
+        ipaDir = tempRoot / (prefix + "_" + std::to_string(i));
     }
 
-    // 解压 ipa 文件。
+    // 目录名一旦确定就登记：解压本身要几十秒，这段时间内被 Ctrl+C 中断也必须能清理。
+    // 若等到 Unzip 成功返回后再登记，解压中途的中断会留下整个临时目录。
+    setActiveTempDir(ipaDir);
+
     Logger::debug("ipa extracted to", ipaDir.string());
     if (!Unzip(filePath, ipaDir)) {
         Logger::error("failed to extract ipa file:", filePath);
+        // Unzip 内部已创建目录并可能写入部分文件，立即通过统一入口清掉并注销登记。
+        cleanupActiveTempDir();
+        ipaDir.clear();
         return EXIT_CODE_READ_FILE_ERROR;
     }
 
@@ -702,7 +854,10 @@ static int writeProvisionFile(const std::filesystem::path& appDir, const std::st
  * @param appDir .app 目录路径。
  */
 static void removeCodeSignatureFolder(const std::filesystem::path& appDir) {
-    std::filesystem::remove_all(appDir / FILE_NAME_CODE_RESOURCES);
+    // 旧签名目录是 _CodeSignature，不是 CodeResources 文件；不清理会把
+    // 旧签名残留文件一起算进新的 CodeResources 封条。
+    std::error_code ec{};
+    std::filesystem::remove_all(appDir / FILE_NAME_CODE_RESOURCES2, ec);
 }
 
 /**
@@ -831,9 +986,22 @@ static int getSignInfo(SignInfo& signInfo, const std::filesystem::path& appDir) 
         return EXIT_CODE_READ_FILE_ERROR;
     }
 
-    signInfo.bundleId = *GetPListString(*plistOpt, PLIST_KEY_CF_BUNDLE_IDENTIFIER);
-    signInfo.execute = *GetPListString(*plistOpt, PLIST_KEY_CF_BUNDLE_EXECUTABLE);
-    signInfo.bundleVersion = *GetPListString(*plistOpt, PLIST_KEY_CF_BUNDLE_VERSION);
+    // GetPListString 在 key 缺失或值不是 <string>（例如 <integer> 版本号）时返回
+    // nullopt，直接解引用是 UB：会读出垃圾 bundleId/execute 并让后续拼出错误路径。
+    auto bundleIdOpt = GetPListString(*plistOpt, PLIST_KEY_CF_BUNDLE_IDENTIFIER);
+    if (!bundleIdOpt || bundleIdOpt->empty()) {
+        Logger::error("bundle identifier is missing in plist:", (appDir / FILE_NAME_PLIST).string());
+        return EXIT_CODE_BUNDLE_NOT_FOUND;
+    }
+    auto executeOpt = GetPListString(*plistOpt, PLIST_KEY_CF_BUNDLE_EXECUTABLE);
+    if (!executeOpt || executeOpt->empty()) {
+        Logger::error("bundle executable is missing in plist:", (appDir / FILE_NAME_PLIST).string());
+        return EXIT_CODE_PLIST_INVALID;
+    }
+    signInfo.bundleId = std::move(*bundleIdOpt);
+    signInfo.execute = std::move(*executeOpt);
+    // 版本号不参与签名计算，仅用于展示；缺失或非字符串时用空串兜底。
+    signInfo.bundleVersion = GetPListString(*plistOpt, PLIST_KEY_CF_BUNDLE_VERSION).value_or("");
     if (auto plistSha1Opt = SHA1Hex(*plistOpt)) signInfo.plistSha1 = *plistSha1Opt;
     if (auto plistSha256Opt = SHA256Hex(*plistOpt)) signInfo.plistSha256 = *plistSha256Opt;
     auto displayNameOpt = GetPListString(*plistOpt, PLIST_KEY_CF_BUNDLE_DISPLAY_NAME);
@@ -866,7 +1034,14 @@ static int getPluginSignInfos(SignInfo& signInfo, const std::filesystem::path& r
     // 遍历文件夹内文件。
     for (auto&& entry : std::filesystem::directory_iterator(appDir)) {
         auto name = entry.path().filename().string();
-        if (entry.is_directory()) {
+        // 不跟随符号链接，避免 framework 的 Versions/Current 之类链接目录重复收集甚至成环。
+        std::error_code stEc{};
+        auto status = entry.symlink_status(stEc);
+        if (stEc) {
+            stEc.clear();
+            continue;
+        }
+        if (std::filesystem::is_directory(status)) {
             // 排除 . 与 .. 文件夹。
             if (name == FILE_NAME_DOT || name == FILE_NAME_DOUBLE_DOT) continue;
 
@@ -889,7 +1064,7 @@ static int getPluginSignInfos(SignInfo& signInfo, const std::filesystem::path& r
             } else {
                 if (auto code = getPluginSignInfos(signInfo, rootAppDir, entry.path())) return code;
             }
-        } else if (entry.is_regular_file()) {
+        } else if (std::filesystem::is_regular_file(status)) {
             if (name.ends_with(FILE_NAME_SUFFIX_DYLIB)) {
                 signInfo.files.push_back(
                     std::filesystem::absolute(entry.path()).string().substr(rootAppDir.string().size() + 1));
@@ -947,6 +1122,13 @@ static void setSignInfoChanged(SignInfo& signInfo) {
  * @param dir 要修改权限的根目录路径。
  */
 static void changeFilesPermission(const std::filesystem::path& dir) {
+#ifdef _WIN32
+    // Windows 上 std::filesystem::permissions 只映射「只读」文件属性，并不产生
+    // Unix 权限位；写入 IPA 的 Unix 模式来自 Unzip 记录的 g_zipMeta，解压出的
+    // 临时文件本来就可读写。对上万文件逐个调用只是额外的系统调用开销。
+    (void)dir;
+    return;
+#else
     constexpr auto perms = std::filesystem::perms::all;
     std::error_code ec{};
 
@@ -970,6 +1152,7 @@ static void changeFilesPermission(const std::filesystem::path& dir) {
             ec.clear();
         }
     }
+#endif
 }
 
 /**
@@ -982,25 +1165,69 @@ static void changeFilesPermission(const std::filesystem::path& dir) {
  * @param baseFolder 计算相对路径的基准目录。
  * @param files [输出] 收集到的相对文件路径集合。
  */
-static void getFolderFiles(const std::filesystem::path& folder, const std::filesystem::path& baseFolder,
+static void getFolderFiles(const std::filesystem::path& folder, const std::string& prefix,
                            std::set<std::string>& files) {
-    for (auto&& entry : std::filesystem::directory_iterator(folder)) {
-        auto name = entry.path().filename().string();
-        if (name == FILE_NAME_DOT || name == FILE_NAME_DOUBLE_DOT) continue;
-        if (entry.is_directory()) {
-            getFolderFiles(entry.path(), baseFolder, files);
-        } else if (entry.is_regular_file()) {
-            auto rel = std::filesystem::relative(entry.path(), baseFolder).generic_string();
-            files.insert(rel);
+    std::error_code ec{};
+    for (auto&& entry : std::filesystem::directory_iterator(folder, ec)) {
+        if (ec) {
+            Logger::warn("failed to iterate directory", PathToUtf8(folder), ec.message());
+            break;
+        }
+        // 递归时累积相对路径，避免对每个文件调用 std::filesystem::relative()
+        // （大 IPA 上万条目时，路径规范化会成为显著开销）。
+        auto name = PathToUtf8Generic(entry.path().filename());
+        if (name.empty()) continue;
+        auto rel = prefix.empty() ? name : prefix + "/" + name;
+
+        // 必须用 symlink_status：is_directory()/is_regular_file() 会跟随符号链接，
+        // 既会把 Versions/Current 之类的链接目录重复展开（甚至死循环），
+        // 又会把链接当成普通文件去哈希目标内容，与 codesign 封条格式不符。
+        auto st = entry.symlink_status(ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        if (std::filesystem::is_directory(st)) {
+            getFolderFiles(entry.path(), rel, files);
+        } else if (std::filesystem::is_regular_file(st) || std::filesystem::is_symlink(st)) {
+            files.insert(std::move(rel));
         }
     }
 }
 
+/// 转义 CodeResources 中 <key>/<string> 的 XML 特殊字符。
+static std::string xmlEscape(const std::string_view text) {
+    std::string out{};
+    out.reserve(text.size());
+    for (auto c : text) {
+        switch (c) {
+        case '&':
+            out += "&amp;";
+            break;
+        case '<':
+            out += "&lt;";
+            break;
+        case '>':
+            out += "&gt;";
+            break;
+        case '"':
+            out += "&quot;";
+            break;
+        case '\'':
+            out += "&apos;";
+            break;
+        default:
+            out += c;
+        }
+    }
+    return out;
+}
+
 /// 生成 CodeResources plist 文件。
 static int generateCodeResources(std::string& codeResources, const std::filesystem::path& appDir) {
-    // 收集所有文件。
+    // 收集所有文件（含符号链接）。
     std::set<std::string> setFiles{};
-    getFolderFiles(appDir, appDir, setFiles);
+    getFolderFiles(appDir, std::string{}, setFiles);
 
     // 获取可执行文件名。
     auto plistOpt = ReadPListAsXML(appDir / FILE_NAME_PLIST);
@@ -1009,11 +1236,15 @@ static int generateCodeResources(std::string& codeResources, const std::filesyst
     setFiles.erase(FILE_PATH_CODE_RESOURCES2);
 
     // 构建 files 和 files2 字典的 XML 片段。
+    // 必须线性追加：早期写法 filesXml = format("{}...", filesXml, ...) 会把已累积
+    // 的整段内容每轮重新格式化一遍，上万条目时是 O(n^2) 的分配/复制。
     std::string filesXml, files2Xml;
+    filesXml.reserve(setFiles.size() * 150);
+    files2Xml.reserve(setFiles.size() * 300);
     for (auto&& key : setFiles) {
-        auto filePath = appDir / key;
-        auto [sha1B64, sha256B64] = SHASumBase64File(filePath);
-        if (sha1B64.empty()) continue;
+        // key 是 UTF-8 归档路径，Windows 下必须按 UTF-16 还原，否则中文名会找不到文件。
+        auto filePath = appDir / Utf8ToPath(key);
+        const auto xmlKey = xmlEscape(key);
 
         bool omit1{}, omit2{};
         if (key == FILE_NAME_PLIST || key == FILE_NAME_PKG_INFO) omit2 = true;
@@ -1023,21 +1254,33 @@ static int generateCodeResources(std::string& codeResources, const std::filesyst
             omit2 = true;
         }
 
+        // 符号链接：仅在 files2 记录 {"symlink": target}，无任何哈希；
+        // v1 files 不支持符号链接。对齐 Apple codesign 的 seal_symlink 格式，
+        // 缺失条目会导致 "a sealed resource is missing or invalid"。
+        std::string symlinkTarget{};
+        if (IsZipSymlinkEntry(filePath, symlinkTarget)) {
+            if (!omit2)
+                files2Xml += std::format("<key>{}</key><dict><key>symlink</key><string>{}</string></dict>", xmlKey,
+                                         xmlEscape(symlinkTarget));
+            continue;
+        }
+
+        auto [sha1B64, sha256B64] = SHASumBase64File(filePath);
+        if (sha1B64.empty()) continue;
+
         if (!omit1) {
             if (key.find(FILE_PATH_LPROJ) != std::string::npos) {
-                filesXml =
-                    std::format("{}<key>{}</key><dict><key>hash</key><data>{}</data><key>optional</key><true/></dict>",
-                                filesXml, key, sha1B64);
+                filesXml +=
+                    std::format("<key>{}</key><dict><key>hash</key><data>{}</data><key>optional</key><true/></dict>",
+                                xmlKey, sha1B64);
             } else {
-                filesXml = std::format("{}<key>{}</key><data>{}</data>", filesXml, key, sha1B64);
+                filesXml += std::format("<key>{}</key><data>{}</data>", xmlKey, sha1B64);
             }
         }
         if (!omit2) {
-            files2Xml =
-                std::format("{}<key>{}</key><dict><key>hash</key><data>{}</data><key>hash2</key><data>{}</data>",
-                            files2Xml, key, sha1B64, sha256B64);
-            if (key.find(FILE_PATH_LPROJ) != std::string::npos)
-                files2Xml = std::format("{}<key>optional</key><true/>", files2Xml);
+            files2Xml += std::format("<key>{}</key><dict><key>hash</key><data>{}</data><key>hash2</key><data>{}</data>",
+                                     xmlKey, sha1B64, sha256B64);
+            if (key.find(FILE_PATH_LPROJ) != std::string::npos) files2Xml += "<key>optional</key><true/>";
             files2Xml += "</dict>";
         }
     }
@@ -1072,7 +1315,7 @@ static int generateCodeResources(std::string& codeResources, const std::filesyst
 <dict><key>omit</key><true/><key>weight</key><real>20</real></dict>
 <key>^PkgInfo$</key>
 <dict><key>omit</key><true/><key>weight</key><real>20</real></dict>
-<key>^embedded\.provisionprofile$</key><dict><key>weight</key>
+<key>^embedded\.mobileprovision$</key><dict><key>weight</key>
 <real>20</real></dict>
 <key>^version\.plist$</key>
 <dict><key>weight</key><real>20</real></dict>)++";
@@ -1162,6 +1405,16 @@ static int signFilesImpl(const SignInfo& signInfo, const SignAsset& signAsset, c
     if (signInfo.path != FILE_NAME_SLASH) baseDir = baseDir / signInfo.path;
     auto executableFilePath = baseDir / signInfo.execute;
 
+    // 插件（appex）使用自己描述文件的 entitlements，并由 slotBuildDerEntitlements
+    // 重新生成 DER；framework/dylib 的 Mach-O 不是 MH_EXECUTE，签名时会自动忽略。
+    std::string_view nodeEntitlements = signAsset.plistEntitlements;
+    if (signInfo.path != FILE_NAME_SLASH) {
+        auto appName = std::filesystem::path(signInfo.path).stem().string();
+        if (auto it = signAsset.appxProvisionEntitlements.find(appName);
+            it != signAsset.appxProvisionEntitlements.end())
+            nodeEntitlements = it->second;
+    }
+
     // Framework 写入描述文件。
     if (signInfo.path.ends_with(FILE_NAME_SUFFIX_FRAMEWORK)) {
         if (!WriteFile(baseDir / FILE_NAME_EMBEDDED_MOBILEPROVISION, signAsset.provision))
@@ -1187,7 +1440,10 @@ static int signFilesImpl(const SignInfo& signInfo, const SignAsset& signAsset, c
         }
     }
 
-    // 生成 CodeResources。
+    // 生成 CodeResources 前清掉本节点（含嵌套 bundle）的旧签名目录，
+    // 避免旧 _CodeSignature 中的残留文件被算进新封条。
+    std::error_code sigEc{};
+    std::filesystem::remove_all(baseDir / FILE_NAME_CODE_RESOURCES2, sigEc);
     MakeDir(baseDir / FILE_NAME_CODE_RESOURCES2,
             std::filesystem::perms::owner_all | std::filesystem::perms::group_exec |
                 std::filesystem::perms::group_read | std::filesystem::perms::others_exec |
@@ -1235,8 +1491,8 @@ static int signFilesImpl(const SignInfo& signInfo, const SignAsset& signAsset, c
     }
     Logger::plain(std::format("  [{}/{}] sign executable  : {}", current, total, label));
     if (!SignMachOFile(executableFilePath, signAsset.certificate.second.get(), signAsset.certificate.first.get(),
-                       signInfo.bundleId, signAsset.teamId, signAsset.certificateName, signAsset.plistEntitlements,
-                       infoPlistSHA1, infoPlistSHA256, codeResData)) {
+                       signInfo.bundleId, signAsset.teamId, signAsset.certificateName, nodeEntitlements, infoPlistSHA1,
+                       infoPlistSHA256, codeResData)) {
         // 子组件签名失败时降级为警告并继续，仅当主可执行（根节点）签名失败时才致命。
         if (signInfo.path == FILE_NAME_SLASH) {
             Logger::error("failed to sign main executable:", executableFilePath.string());
@@ -1269,19 +1525,6 @@ static int packageIPA(const std::filesystem::path& ipaDir, const std::filesystem
     if (!Zip(ipaDir, dest, compressLevel)) return EXIT_CODE_ZIP_ERROR;
 
     return 0;
-}
-
-/**
- * @brief 清理 IPA 解压的临时目录。
- *
- * 签名和打包完成后，删除在系统临时目录下创建的 IPA 解压文件夹，
- * 释放磁盘空间。此操作不可逆。
- *
- * @param ipaDir 要删除的临时解压目录路径。
- */
-static void removeIpaDir(const std::filesystem::path& ipaDir) {
-    Logger::debug("remove ipa temporary directory:", ipaDir.string());
-    std::filesystem::remove_all(ipaDir);
 }
 
 /**
@@ -1359,6 +1602,7 @@ static void printSignAssetSummary(const SignAsset& signAsset) {
  */
 int DoSign(const Options& opts) {
     auto totalStart = std::chrono::steady_clock::now();
+    installTempDirCleanupHandlers();
 
     auto reportFailure = [&](int code, std::string_view stageLabel) {
         auto elapsed =
@@ -1374,6 +1618,9 @@ int DoSign(const Options& opts) {
 
     // ===== Stage 1: 准备工作 + 配置/证书信息打印。 =====
     SignAsset signAsset{};
+    // RAII：无论从哪个 return 退出、或抛出 C++ 异常导致栈展开，都会清理临时目录。
+    // cleanupActiveTempDir 内部会清空登记，与成功路径的显式清理、信号回调互不冲突。
+    ScopeGuard tempDirGuard{[]() noexcept { cleanupActiveTempDir(); }};
     Configuration cfg{};
     {
         // 先解析配置，得到 cfg 后再统一打印 stage 1 概览。
@@ -1381,6 +1628,11 @@ int DoSign(const Options& opts) {
             return reportFailure(code, "parse configuration");
         signAsset.ipaOutputPath = cfg.destinationIpaFilePath;
         signAsset.compressLevel = cfg.zipLevel;
+
+        // 尽早回收上次被强杀 / Ctrl+C / 崩溃留下的同前缀临时目录。
+        // 放在配置解析之后、任何可能失败的签名步骤之前，保证只要能读到源
+        // IPA 路径就会执行，不依赖后续流程是否走到解压。
+        cleanupStaleTempDirs(std::filesystem::path(cfg.ipaFilePath).stem().string());
 
         if (auto code = readProvisionFile(signAsset.provision, cfg.mobileProvisionFilePath))
             return reportFailure(code, "read provision");
@@ -1405,7 +1657,8 @@ int DoSign(const Options& opts) {
         if (auto code = readAppxProvisionFile(signAsset.appxProvisions, cfg.appxProvisions))
             return reportFailure(code, "read appx provisions");
 
-        if (auto code = getAppxProvisionBundleIds(signAsset.appxProvisionBundleIds, signAsset.appxProvisions))
+        if (auto code = getAppxProvisionBundleIds(signAsset.appxProvisionBundleIds, signAsset.appxProvisionEntitlements,
+                                                  signAsset.appxProvisions))
             return reportFailure(code, "extract appx bundle ids");
 
         // 打印 Stage 1 概览。
@@ -1468,7 +1721,8 @@ int DoSign(const Options& opts) {
     auto packMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - packStart).count();
 
-    removeIpaDir(signAsset.ipaDir);
+    // 成功路径提前清理（计入 total time）；守卫析构时会发现登记已清空而跳过。
+    cleanupActiveTempDir();
 
     // ===== Stage 3: 总结。 =====
     auto totalMs =

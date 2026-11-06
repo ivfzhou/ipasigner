@@ -167,10 +167,12 @@ std::optional<std::string> XMLToBPList(std::string_view xml);
 std::optional<std::string> ReadPListAsXML(const std::filesystem::path& filePath);
 
 /**
- * @brief 将 XML 格式的 plist 字符串转换为 Binary Plist 后写入指定文件。
+ * @brief 把（可能被修改过的）XML plist 写回文件。
  *
- * Apple 的 plist 解析器（如 zsign 内置的 PReader）更可靠地支持 Binary Plist 格式，
- * 因此在将修改后的 Info.plist 写回 IPA 时，需要先将 XML 转为 bplist00 二进制再落盘。
+ * Info.plist 强制写成 bplist00（zsign -C 等工具只认二进制 plist，否则会把
+ * IPA 判定为未签名）；其余 plist 按原格式写回。原文件为 bplist 时在保留
+ * 全类型的原生对象树上打补丁后重新序列化，避免 bplist -> XML -> bplist
+ * 往返丢失 set / UID / null / Int128 等类型；内容未变时字节级透传。
  *
  * @param filePath 目标文件路径。
  * @param xmlPlist XML 格式的 plist 字符串。

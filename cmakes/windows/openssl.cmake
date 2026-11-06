@@ -56,7 +56,7 @@ else ()
             URL_HASH SHA256=${OPENSSL_SHA256}
             SOURCE_DIR ${OPENSSL_SOURCE_DIRECTORY}
             BINARY_DIR ${OPENSSL_BUILD_DIRECTORY}
-            CONFIGURE_COMMAND call "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat" && perl ${OPENSSL_SOURCE_DIRECTORY}/Configure
+            CONFIGURE_COMMAND perl ${OPENSSL_SOURCE_DIRECTORY}/Configure
                 --prefix=${OPENSSL_INSTALL_DIRECTORY}
                 --openssldir=${OPENSSL_INSTALL_DIRECTORY}
                 --with-zlib-include=${ZLIB_INCLUDE_DIRECTORY}
@@ -71,8 +71,8 @@ else ()
                 no-tests
                 zlib
                 enable-zstd
-            BUILD_COMMAND call "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat" && nmake
-            INSTALL_COMMAND call "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat" && nmake install
+            BUILD_COMMAND nmake
+            INSTALL_COMMAND nmake install
     )
     set(OPENSSL_LIBRARY ${OPENSSL_LIBRARY_DIRECTORY}/${OPENSSL_LIBRARY_NAME})
     set(CRYPTO_LIBRARY ${OPENSSL_LIBRARY_DIRECTORY}/${CRYPTO_LIBRARY_NAME})

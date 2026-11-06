@@ -11,7 +11,7 @@
 cmake_minimum_required(VERSION 3.30)
 
 # 声明项目信息。
-project(ipasigner LANGUAGES CXX VERSION 1.0.1)
+project(ipasigner LANGUAGES CXX VERSION 1.0.2)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -109,7 +109,9 @@ endif ()
 list(REVERSE LIBRARIES)
 
 # 设置编译前要处理的依赖项。设置构建顺序依赖。
-add_dependencies(${PROJECT_NAME} ${DEPENDENCIES})
+if (DEPENDENCIES)
+    add_dependencies(${PROJECT_NAME} ${DEPENDENCIES})
+endif ()
 
 # 设置编译时头文件搜索路径、包含目录。
 target_include_directories(${PROJECT_NAME} PRIVATE ${HEADERS})

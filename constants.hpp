@@ -141,6 +141,11 @@ extern const char* const
     CERTIFICATE_APPLE_DEV_CA; ///< Apple Worldwide Developer Relations CA（G1 中间证书，PEM 格式）。
 extern const char* const
     CERTIFICATE_APPLE_DEV_G3_CA; ///< Apple Worldwide Developer Relations CA G3（中间证书，PEM 格式）。
+extern const char* const CERTIFICATE_APPLE_DEV_G2_CA; ///< Apple WWDR CA G2（中间证书，PEM 格式）。
+extern const char* const CERTIFICATE_APPLE_DEV_G4_CA; ///< Apple WWDR CA G4（中间证书，PEM 格式）。
+extern const char* const CERTIFICATE_APPLE_DEV_G5_CA; ///< Apple WWDR CA G5（中间证书，PEM 格式）。
+extern const char* const CERTIFICATE_APPLE_DEV_G6_CA; ///< Apple WWDR CA G6（中间证书，PEM 格式）。
+extern const char* const CERTIFICATE_APPLE_ROOT_G3_CA; ///< Apple Root CA - G3（根证书，PEM 格式）。
 
 /**
  * @brief 获取平台对应的换行符。

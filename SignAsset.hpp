@@ -60,6 +60,9 @@ class SignAsset final {
     /// 插件对应的 Bundle ID 映射，键为插件名称，值为从描述文件中解析出的 Bundle ID。
     std::map<std::string, std::string> appxProvisionBundleIds;
 
+    /// 插件对应描述文件中的 Entitlements XML 片段（键与 appxProvisions 一致）。
+    std::map<std::string, std::string> appxProvisionEntitlements;
+
     /// IPA 解压后的临时目录路径。
     std::filesystem::path ipaDir;
 

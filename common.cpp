@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -29,6 +30,9 @@
 #include <format>
 #include <fstream>
 #include <ios>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <queue>
 #include <regex>
@@ -495,6 +499,189 @@ static std::string xmlEscape(const std::string_view s) {
     return out;
 }
 
+/// UTF-16BE 单元序列转 UTF-8，正确合并高低代理项。
+/// 旧实现把代理项各自编成 3 字节（CESU-8），既不是合法 UTF-8，也会让 pugixml
+/// 解析 XML 中间表示时失败，emoji / 部分 CJK 扩展字符因此丢失。
+static std::string utf16beToUtf8(const std::uint8_t* data, const std::uint64_t pos, const std::uint64_t count) {
+    std::string out{};
+    out.reserve(count);
+    for (std::uint64_t i{}; i < count; ++i) {
+        auto unit = static_cast<std::uint16_t>(bplistReadUInt(data, pos + i * 2, 2));
+        std::uint32_t cp = unit;
+        if (unit >= 0xD800 && unit <= 0xDBFF && i + 1 < count) {
+            auto low = static_cast<std::uint16_t>(bplistReadUInt(data, pos + (i + 1) * 2, 2));
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                cp = 0x10000u + ((static_cast<std::uint32_t>(unit) - 0xD800u) << 10) +
+                    (static_cast<std::uint32_t>(low) - 0xDC00u);
+                ++i;
+            } else {
+                cp = 0xFFFDu; // 孤立高代理项：XML 无法表达，退化为替换字符。
+            }
+        } else if (unit >= 0xD800 && unit <= 0xDFFF) {
+            cp = 0xFFFDu;
+        }
+        if (cp < 0x80) {
+            out += static_cast<char>(cp);
+        } else if (cp < 0x800) {
+            out += static_cast<char>(0xC0u | (cp >> 6));
+            out += static_cast<char>(0x80u | (cp & 0x3Fu));
+        } else if (cp < 0x10000) {
+            out += static_cast<char>(0xE0u | (cp >> 12));
+            out += static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu));
+            out += static_cast<char>(0x80u | (cp & 0x3Fu));
+        } else {
+            out += static_cast<char>(0xF0u | (cp >> 18));
+            out += static_cast<char>(0x80u | ((cp >> 12) & 0x3Fu));
+            out += static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu));
+            out += static_cast<char>(0x80u | (cp & 0x3Fu));
+        }
+    }
+    return out;
+}
+
+/// 读取 bplist 字符串对象（ASCII 0x5 / UTF-16BE 0x6，含 0x0F 扩展长度），
+/// 统一返回 UTF-8，供字符串值与 dict key 共用。
+static std::optional<std::string> bplistStringToUtf8(const std::uint8_t* data, const std::uint64_t dataSize,
+                                                     const std::uint64_t offset) {
+    if (offset >= dataSize) return std::nullopt;
+    const auto marker = data[offset];
+    const auto type = static_cast<std::uint8_t>(marker >> 4);
+    const auto info = static_cast<std::uint8_t>(marker & 0x0F);
+    auto pos = offset + 1;
+    std::uint64_t count = info;
+    if (info == 0x0F) {
+        if (pos >= dataSize) return std::nullopt;
+        const auto sizeMarker = data[pos++];
+        if ((sizeMarker >> 4) != 0x01) return std::nullopt;
+        const auto nbytes = static_cast<std::uint8_t>(1u << (sizeMarker & 0x0F));
+        if (nbytes > 8 || pos + nbytes > dataSize) return std::nullopt;
+        count = bplistReadUInt(data, pos, nbytes);
+        pos += nbytes;
+    }
+    if (type == 0x5) {
+        if (count > dataSize - pos) return std::nullopt;
+        return std::string(reinterpret_cast<const char*>(data + pos), static_cast<std::size_t>(count));
+    }
+    if (type == 0x6) {
+        if (count > (dataSize - pos) / 2) return std::nullopt;
+        return utf16beToUtf8(data, pos, count);
+    }
+    return std::nullopt;
+}
+
+/// Apple bplist <date> 的纪元：2001-01-01T00:00:00Z 对应的 Unix 秒数。
+constexpr std::int64_t APPLE_EPOCH_UNIX_SECONDS = 978307200;
+
+/// 公历日期 -> 自 1970-01-01 的天数（Howard Hinnant civil calendar 算法）。
+static std::int64_t daysFromCivil(std::int64_t y, const unsigned m, const unsigned d) {
+    y -= m <= 2 ? 1 : 0;
+    const std::int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const auto yoe = static_cast<unsigned>(y - era * 400);
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + static_cast<std::int64_t>(doe) - 719468;
+}
+
+/// 自 1970-01-01 的天数 -> 公历日期。
+static void civilFromDays(std::int64_t z, std::int64_t& y, unsigned& m, unsigned& d) {
+    z += 719468;
+    const std::int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    const auto doe = static_cast<unsigned>(z - era * 146097);
+    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const std::int64_t yy = static_cast<std::int64_t>(yoe) + era * 400;
+    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const unsigned mp = (5 * doy + 2) / 153;
+    d = doy - (153 * mp + 2) / 5 + 1;
+    m = mp < 10 ? mp + 3 : mp - 9;
+    y = yy + (m <= 2 ? 1 : 0);
+}
+
+/// bplist date（自 2001-01-01 起的秒数，double）-> ISO8601 字符串。
+static std::string bplistDateToISO8601(const double appleSeconds) {
+    const double unixSeconds = static_cast<double>(APPLE_EPOCH_UNIX_SECONDS) + appleSeconds;
+    auto total = static_cast<std::int64_t>(std::floor(unixSeconds));
+    const double frac = unixSeconds - static_cast<double>(total);
+    std::int64_t days = total / 86400;
+    std::int64_t sod = total % 86400;
+    if (sod < 0) {
+        sod += 86400;
+        --days;
+    }
+    std::int64_t y{};
+    unsigned m{}, d{};
+    civilFromDays(days, y, m, d);
+    std::string out =
+        std::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}", y, m, d, sod / 3600, sod % 3600 / 60, sod % 60);
+    if (frac > 1e-6) {
+        auto fracStr = std::format("{:.6f}", frac); // "0.500000"
+        fracStr.erase(0, 1); // ".500000"
+        while (fracStr.size() > 2 && fracStr.back() == '0') fracStr.pop_back();
+        out += fracStr;
+    }
+    out += 'Z';
+    return out;
+}
+
+/// ISO8601 字符串 -> bplist date 秒数。解析 "YYYY-MM-DDTHH:MM:SS[.f]Z"。
+static std::optional<double> iso8601ToBplistDate(const std::string_view in) {
+    auto s = StringTrimBlank(in);
+    if (s.size() < 19) return std::nullopt;
+    auto digits = [&](const std::size_t pos, const std::size_t len) -> std::optional<std::int64_t> {
+        if (pos + len > s.size()) return std::nullopt;
+        std::int64_t v{};
+        for (std::size_t i{}; i < len; ++i) {
+            if (s[pos + i] < '0' || s[pos + i] > '9') return std::nullopt;
+            v = v * 10 + (s[pos + i] - '0');
+        }
+        return v;
+    };
+    auto y = digits(0, 4);
+    auto mo = digits(5, 2);
+    auto d = digits(8, 2);
+    auto h = digits(11, 2);
+    auto mi = digits(14, 2);
+    auto se = digits(17, 2);
+    if (!y || !mo || !d || !h || !mi || !se) return std::nullopt;
+
+    double frac{};
+    std::size_t p = 19;
+    if (p < s.size() && s[p] == '.') {
+        ++p;
+        double scale = 0.1;
+        while (p < s.size() && s[p] >= '0' && s[p] <= '9') {
+            frac += (s[p] - '0') * scale;
+            scale *= 0.1;
+            ++p;
+        }
+    }
+    const auto days = daysFromCivil(*y, static_cast<unsigned>(*mo), static_cast<unsigned>(*d));
+    const auto unixSeconds = days * 86400 + *h * 3600 + *mi * 60 + *se;
+    return static_cast<double>(unixSeconds - APPLE_EPOCH_UNIX_SECONDS) + frac;
+}
+
+namespace {
+/// 保留 bplist 全类型的对象树，完整定义见本文件末尾的 bplist 原生编辑层。
+struct BPListNode;
+
+/// 记录 plist 的原始字节、格式与由之生成的 XML：上层未修改 XML 时字节级透传；
+/// 修改后按原格式写回（XML）或在原生对象树上打补丁（bplist）。
+struct PListSourceBytes {
+    std::string original{};
+    std::string xml{};
+    PListFormat format{PListFormat::Unknown};
+    std::shared_ptr<BPListNode> tree{}; ///< 仅 Binary 格式有效。
+};
+std::mutex g_plistSourceMutex{};
+std::map<std::filesystem::path, PListSourceBytes> g_plistSources{};
+
+std::filesystem::path plistCacheKey(const std::filesystem::path& p) {
+    std::error_code ec{};
+    auto abs = std::filesystem::absolute(p, ec);
+    if (ec) abs = p;
+    return abs.lexically_normal();
+}
+} // namespace
+
 /**
  * @brief 递归将 Binary Plist 中的单个对象转换为 XML 字符串。
  *
@@ -558,20 +745,27 @@ static bool bplistObjectToXML(const std::uint8_t* data, std::uint64_t dataSize,
             out += indent + "<false/>\n";
         } else if (objectInfo == 0x09) {
             out += indent + "<true/>\n";
+        } else {
+            // null/fill 在 XML plist 里没有对应类型。旧实现直接跳过会破坏
+            // array/dict 的 key/value 配对，产生非法 XML；补占位值保持结构完整。
+            Logger::warn("bplist null/fill object degraded to <false/> in XML");
+            out += indent + "<false/>\n";
         }
-        // 0x00 (null) and 0x0F (fill) are skipped。
         break;
     }
     case 0x1: {
-        // Integer：2^objectInfo 字节的大端整数。
-        std::uint8_t byteCount = 1u << objectInfo;
-        if (offset + 1 + byteCount > dataSize) return false;
+        // Integer：2^objectInfo 字节的大端补码（负数按符号扩展）。
+        const std::uint8_t byteCount = 1u << objectInfo;
+        if (byteCount > 8 || offset + 1 + byteCount > dataSize) return false;
         auto val = bplistReadUInt(data, offset + 1, byteCount);
-        out += indent + "<integer>" + std::to_string(val) + "</integer>\n";
+        if (byteCount < 8 && (val >> (byteCount * 8 - 1) & 1u) != 0)
+            val |= ~((static_cast<std::uint64_t>(1) << (byteCount * 8)) - 1);
+        out += indent + "<integer>" + std::to_string(static_cast<std::int64_t>(val)) + "</integer>\n";
         break;
     }
     case 0x2: {
-        // Real：4 字节 float 或 8 字节 double。
+        // Real：4 字节 float 或 8 字节 double。std::to_string 只有 6 位小数，
+        // 双精度值会被截断；改用 17 位有效数字保证往返可复原。
         std::uint8_t byteCount = 1u << objectInfo;
         if (offset + 1 + byteCount > dataSize) return false;
         double val{};
@@ -584,16 +778,16 @@ static bool bplistObjectToXML(const std::uint8_t* data, std::uint64_t dataSize,
             std::uint64_t bits = bplistReadUInt(data, offset + 1, 8);
             std::memcpy(&val, &bits, 8);
         }
-        out += indent + "<real>" + std::to_string(val) + "</real>\n";
+        out += indent + "<real>" + std::format("{:.17g}", val) + "</real>\n";
         break;
     }
     case 0x3: {
-        // Date：8 字节 double（Core Data 时间戳，基于 2001-01-01）。
+        // Date：8 字节 double（自 2001-01-01 起的秒数），保留真实时间戳。
         if (offset + 9 > dataSize) return false;
         std::uint64_t bits = bplistReadUInt(data, offset + 1, 8);
         double timestamp{};
         std::memcpy(&timestamp, &bits, 8);
-        out += indent + "<date>2001-01-01T00:00:00Z</date>\n";
+        out += indent + "<date>" + bplistDateToISO8601(timestamp) + "</date>\n";
         break;
     }
     case 0x4: {
@@ -627,26 +821,11 @@ static bool bplistObjectToXML(const std::uint8_t* data, std::uint64_t dataSize,
         break;
     }
     case 0x6: {
-        // Unicode (UTF-16BE) string。
+        // Unicode (UTF-16BE) string：合并代理对后输出标准 4 字节 UTF-8。
         auto pos = offset + 1;
         auto count = readExtendedSize(pos);
         if (pos + count * 2 > dataSize) return false;
-        // 简单 UTF-16BE -> ASCII/UTF-8 转换。
-        std::string str{};
-        for (std::uint64_t i{}; i < count; ++i) {
-            auto ch = static_cast<std::uint16_t>(bplistReadUInt(data, pos + i * 2, 2));
-            if (ch < 0x80) {
-                str += static_cast<char>(ch);
-            } else if (ch < 0x800) {
-                str += static_cast<char>(0xC0 | (ch >> 6));
-                str += static_cast<char>(0x80 | (ch & 0x3F));
-            } else {
-                str += static_cast<char>(0xE0 | (ch >> 12));
-                str += static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
-                str += static_cast<char>(0x80 | (ch & 0x3F));
-            }
-        }
-        out += indent + "<string>" + xmlEscape(str) + "</string>\n";
+        out += indent + "<string>" + xmlEscape(utf16beToUtf8(data, pos, count)) + "</string>\n";
         break;
     }
     case 0x8: {
@@ -689,57 +868,13 @@ static bool bplistObjectToXML(const std::uint8_t* data, std::uint64_t dataSize,
             if (keyIdx >= objectCount) return false;
             auto keyOffset = offsetTable[keyIdx];
             if (keyOffset >= dataSize) return false;
-            auto keyMarker = data[keyOffset];
-            auto keyType = static_cast<std::uint8_t>(keyMarker >> 4);
-            auto keyInfo = static_cast<std::uint8_t>(keyMarker & 0x0F);
-            std::string keyStr{};
-            if (keyType == 0x5) {
-                auto keyPos = keyOffset + 1;
-                auto keyCount = static_cast<std::uint64_t>(keyInfo);
-                if (keyInfo == 0x0F) {
-                    if (keyPos < dataSize) {
-                        auto sm = data[keyPos];
-                        auto sp = static_cast<std::uint8_t>(sm & 0x0F);
-                        std::uint8_t sb = 1u << sp;
-                        keyPos++;
-                        keyCount = bplistReadUInt(data, keyPos, sb);
-                        keyPos += sb;
-                    }
-                }
-                if (keyPos + keyCount <= dataSize)
-                    keyStr = std::string(reinterpret_cast<const char*>(data + keyPos), keyCount);
-            } else if (keyType == 0x6) {
-                auto keyPos = keyOffset + 1;
-                auto keyCount = static_cast<std::uint64_t>(keyInfo);
-                if (keyInfo == 0x0F) {
-                    if (keyPos < dataSize) {
-                        auto sm = data[keyPos];
-                        auto sp = static_cast<std::uint8_t>(sm & 0x0F);
-                        std::uint8_t sb = 1u << sp;
-                        keyPos++;
-                        keyCount = bplistReadUInt(data, keyPos, sb);
-                        keyPos += sb;
-                    }
-                }
-                if (keyPos + keyCount * 2 <= dataSize) {
-                    for (std::uint64_t j{}; j < keyCount; ++j) {
-                        auto ch = static_cast<std::uint16_t>(bplistReadUInt(data, keyPos + j * 2, 2));
-                        if (ch < 0x80) {
-                            keyStr += static_cast<char>(ch);
-                        } else if (ch < 0x800) {
-                            keyStr += static_cast<char>(0xC0 | (ch >> 6));
-                            keyStr += static_cast<char>(0x80 | (ch & 0x3F));
-                        } else {
-                            keyStr += static_cast<char>(0xE0 | (ch >> 12));
-                            keyStr += static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
-                            keyStr += static_cast<char>(0x80 | (ch & 0x3F));
-                        }
-                    }
-                }
-            } else {
-                return false;
-            }
-            out += indent + "\t<key>" + xmlEscape(keyStr) + "</key>\n";
+            // dict 键同样要走完整的 UTF-16BE / 扩展长度解析，否则含代理对的
+            // 键会被拆成非法 CESU-8，后续 pugixml 解析失败。
+            auto keyType = static_cast<std::uint8_t>(data[keyOffset] >> 4);
+            if (keyType != 0x5 && keyType != 0x6) return false;
+            auto keyStr = bplistStringToUtf8(data, dataSize, keyOffset);
+            if (!keyStr) return false;
+            out += indent + "\t<key>" + xmlEscape(*keyStr) + "</key>\n";
             if (!bplistObjectToXML(data, dataSize, offsetTable, objectCount, objectRefSize, valIdx, out, depth + 1))
                 return false;
         }
@@ -747,7 +882,10 @@ static bool bplistObjectToXML(const std::uint8_t* data, std::uint64_t dataSize,
         break;
     }
     default: {
+        // 未知类型（set/ordered set 等）不能静默跳过，否则 dict/array 的
+        // key/value 配对错位，输出非法 XML。补占位值保持结构完整。
         Logger::warn("unsupported bplist object type:", std::to_string(objectType));
+        out += indent + "<data></data>\n";
         break;
     }
     }
@@ -843,6 +981,8 @@ enum class BPObjectType {
     Array,
     Dict,
     Real,
+    Date,
+    UID,
 };
 
 /// 构建 Binary Plist 时使用的对象描述。
@@ -861,6 +1001,24 @@ static bool isAsciiOnly(const std::string& s) {
     for (auto c : s)
         if (static_cast<unsigned char>(c) > 0x7F) return false;
     return true;
+}
+
+/// 解析 XML plist <integer> 的十进制文本；负数按 bplist 的 8 字节补码存储。
+static std::uint64_t parsePlistInteger(const std::string_view text) {
+    std::uint64_t val{};
+    bool negative{};
+    auto p = text.data();
+    const auto end = p + text.size();
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p;
+    if (p < end && (*p == '-' || *p == '+')) {
+        negative = *p == '-';
+        ++p;
+    }
+    for (; p < end; ++p) {
+        if (*p < '0' || *p > '9') break;
+        val = val * 10 + (*p - '0');
+    }
+    return negative ? static_cast<std::uint64_t>(-static_cast<std::int64_t>(val)) : val;
 }
 
 /// 以大端序追加指定字节数的无符号整数到输出缓冲区。
@@ -913,25 +1071,7 @@ static std::uint64_t xmlNodeToBPObject(const pugi::xml_node& valueNode, std::vec
         obj.type = BPObjectType::False;
     } else if (name == "integer") {
         obj.type = BPObjectType::Integer;
-        std::string_view text(valueNode.child_value());
-        std::uint64_t val{};
-        bool negative{};
-        auto p = text.data();
-        auto end = p + text.size();
-        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p;
-        if (p < end && *p == '-') {
-            negative = true;
-            ++p;
-        }
-        for (; p < end; ++p) {
-            if (*p >= '0' && *p <= '9') {
-                val = val * 10 + (*p - '0');
-            } else {
-                break;
-            }
-        }
-        if (negative) val = static_cast<std::uint64_t>(-static_cast<std::int64_t>(val));
-        obj.intValue = val;
+        obj.intValue = parsePlistInteger(valueNode.child_value());
     } else if (name == "string") {
         obj.type = BPObjectType::String;
         obj.strValue = valueNode.child_value();
@@ -989,6 +1129,26 @@ static std::uint64_t xmlNodeToBPObject(const pugi::xml_node& valueNode, std::vec
         }
         return selfIdx;
     } else if (name == "dict") {
+        // NSKeyedArchiver 的 UID 在 XML plist 里表示为 dict{CF$UID: integer}。
+        // 写回 bplist 时必须还原成 0x8 UID 对象，否则类型被永久降级为字典。
+        std::size_t elementCount = 0;
+        std::string uidKey{};
+        pugi::xml_node uidValue{};
+        for (auto c = valueNode.first_child(); c; c = c.next_sibling()) {
+            if (c.type() != pugi::node_element) continue;
+            ++elementCount;
+            if (elementCount == 1)
+                uidKey = c.child_value();
+            else if (elementCount == 2)
+                uidValue = c;
+        }
+        if (elementCount == 2 && uidKey == "CF$UID" && std::string_view(uidValue.name()) == "integer") {
+            obj.type = BPObjectType::UID;
+            obj.intValue = parsePlistInteger(uidValue.child_value());
+            auto idx = objects.size();
+            objects.push_back(std::move(obj));
+            return idx;
+        }
         obj.type = BPObjectType::Dict;
         auto selfIdx = objects.size();
         objects.push_back(std::move(obj));
@@ -1020,9 +1180,9 @@ static std::uint64_t xmlNodeToBPObject(const pugi::xml_node& valueNode, std::vec
         }
         return selfIdx;
     } else if (name == "date") {
-        // 简化处理：写入为字符串。
-        obj.type = BPObjectType::String;
-        obj.strValue = valueNode.child_value();
+        // 还原为真正的 bplist date 对象（0x33 + 8 字节双精度时间戳）。
+        obj.type = BPObjectType::Date;
+        obj.realValue = iso8601ToBplistDate(valueNode.child_value()).value_or(0.0);
     } else {
         // 未知类型：默认当空字符串处理。
         obj.type = BPObjectType::String;
@@ -1062,6 +1222,20 @@ static std::uint64_t writeBPObject(std::string& out, const BPObject& obj, int ob
         std::uint64_t bits{};
         std::memcpy(&bits, &obj.realValue, 8);
         appendBE(out, bits, 8);
+        break;
+    }
+    case BPObjectType::Date: {
+        out.push_back('\x33'); // 0x33 = date, 8-byte big-endian double。
+        std::uint64_t bits{};
+        std::memcpy(&bits, &obj.realValue, 8);
+        appendBE(out, bits, 8);
+        break;
+    }
+    case BPObjectType::UID: {
+        // 0x8N：低 4 位为字节数 - 1，读方向按 objectInfo + 1 还原。
+        const int nbytes = calcIntBytes(obj.intValue);
+        out.push_back(static_cast<char>(0x80u | (nbytes - 1)));
+        appendBE(out, obj.intValue, nbytes);
         break;
     }
     case BPObjectType::String: {
@@ -1201,6 +1375,670 @@ std::optional<std::string> XMLToBPList(const std::string_view xml) {
     return out;
 }
 
+// ===== bplist 原生对象树编辑层 =====
+//
+// 修改 bplist 时不再走「bplist -> XML -> bplist」重建（XML plist 的 DTD 无法
+// 表达 set / ordered set / UID / null / 16 字节整数），而是：
+//   1) 把原始 bplist 解析成保留全类型的 BPListNode 树；
+//   2) 由该树生成 XML 供上层读取/修改（无法表达的类型降级成固定占位节点）；
+//   3) 写回时把新 XML 解析成树，与原生树做结构对齐合并：未变化的分支沿用
+//      原生节点（类型与字节原样保留），只有真正被改动的分支采用新节点；
+//   4) 从合并后的原生树重新序列化 bplist。
+namespace {
+
+enum class BPType : std::uint8_t {
+    Null,
+    Bool,
+    Int,
+    Int128,
+    Real,
+    Date,
+    Data,
+    String,
+    UID,
+    Array,
+    OrderedSet,
+    Set,
+    Dict,
+};
+
+struct BPListNode {
+    BPType type{BPType::Null};
+    bool boolValue{};
+    std::uint64_t intValue{}; ///< Int / UID
+    std::string int128Bytes{}; ///< Int128：16 字节大端原值
+    double realValue{}; ///< Real / Date
+    std::string strValue{}; ///< String(UTF-8) / Data(原始字节)
+    std::vector<BPListNode> items{}; ///< Array / Set / OrderedSet
+    std::vector<std::pair<std::string, BPListNode>> dict{}; ///< Dict（保持原始顺序）
+
+    static BPListNode ofBool(const bool v) {
+        BPListNode n;
+        n.type = BPType::Bool;
+        n.boolValue = v;
+        return n;
+    }
+    static BPListNode ofInt(const std::uint64_t v) {
+        BPListNode n;
+        n.type = BPType::Int;
+        n.intValue = v;
+        return n;
+    }
+    static BPListNode ofString(std::string v) {
+        BPListNode n;
+        n.type = BPType::String;
+        n.strValue = std::move(v);
+        return n;
+    }
+    static BPListNode ofData(std::string v) {
+        BPListNode n;
+        n.type = BPType::Data;
+        n.strValue = std::move(v);
+        return n;
+    }
+};
+
+static std::string bpBase64Encode(const std::string_view bytes) {
+    static constexpr char kChars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out{};
+    out.reserve((bytes.size() + 2) / 3 * 4);
+    for (std::size_t i{}; i < bytes.size(); i += 3) {
+        const auto b0 = static_cast<std::uint8_t>(bytes[i]);
+        const auto b1 = i + 1 < bytes.size() ? static_cast<std::uint8_t>(bytes[i + 1]) : 0;
+        const auto b2 = i + 2 < bytes.size() ? static_cast<std::uint8_t>(bytes[i + 2]) : 0;
+        out += kChars[b0 >> 2];
+        out += kChars[((b0 & 0x03) << 4) | (b1 >> 4)];
+        out += i + 1 < bytes.size() ? kChars[((b1 & 0x0F) << 2) | (b2 >> 6)] : '=';
+        out += i + 2 < bytes.size() ? kChars[b2 & 0x3F] : '=';
+    }
+    return out;
+}
+
+static std::string bpBase64Decode(const std::string_view text) {
+    auto val = [](const char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    std::string out{};
+    std::uint32_t buf{};
+    int bits{};
+    for (auto c : text) {
+        if (c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
+        if (c == '=') break;
+        const int v = val(c);
+        if (v < 0) continue;
+        buf = (buf << 6) | static_cast<std::uint32_t>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<char>(buf >> bits & 0xFF));
+        }
+    }
+    return out;
+}
+
+/// 读取 bplist 对象的长度字段（内联小长度，或 0x0F 后跟一个 integer 对象）。
+struct BPLength {
+    std::uint64_t count{};
+    std::uint64_t pos{};
+};
+static bool bpReadLength(const std::uint8_t* d, const std::uint64_t size, const std::uint64_t off,
+                         const std::uint8_t info, BPLength& out) {
+    out.pos = off + 1;
+    if (info != 0x0F) {
+        out.count = info;
+        return true;
+    }
+    if (out.pos >= size) return false;
+    const auto marker = d[out.pos++];
+    if ((marker >> 4) != 0x01) return false;
+    const auto nbytes = static_cast<std::uint8_t>(1u << (marker & 0x0F));
+    if (nbytes > 8 || out.pos + nbytes > size) return false;
+    out.count = bplistReadUInt(d, out.pos, nbytes);
+    out.pos += nbytes;
+    return true;
+}
+
+static bool bpParseObject(const std::uint8_t* d, const std::uint64_t size, const std::vector<std::uint64_t>& table,
+                          const std::uint8_t refSize, const std::uint64_t idx, BPListNode& out, const int depth,
+                          std::vector<std::uint8_t>& active) {
+    if (idx >= table.size() || depth > 64 || active[idx]) return false;
+    active[idx] = 1;
+    ScopeGuard leave{[&] { active[idx] = 0; }};
+    const auto off = table[idx];
+    if (off >= size) return false;
+    const auto marker = d[off];
+    const auto type = static_cast<std::uint8_t>(marker >> 4);
+    const auto info = static_cast<std::uint8_t>(marker & 0x0F);
+
+    switch (type) {
+    case 0x0:
+        out = info == 0x08 ? BPListNode::ofBool(false)
+            : info == 0x09 ? BPListNode::ofBool(true)
+                           : BPListNode{}; // null / fill
+        return true;
+    case 0x1: {
+        const auto n = 1u << info;
+        if (n > 16 || off + 1 + n > size) return false;
+        if (n == 16) {
+            out = BPListNode{};
+            out.type = BPType::Int128;
+            out.int128Bytes.assign(reinterpret_cast<const char*>(d + off + 1), 16);
+        } else {
+            out = BPListNode::ofInt(bplistReadUInt(d, off + 1, static_cast<std::uint8_t>(n)));
+        }
+        return true;
+    }
+    case 0x2: {
+        const auto n = 1u << info;
+        if ((n != 4 && n != 8) || off + 1 + n > size) return false;
+        double v{};
+        if (n == 4) {
+            auto bits = static_cast<std::uint32_t>(bplistReadUInt(d, off + 1, 4));
+            float f{};
+            std::memcpy(&f, &bits, 4);
+            v = f;
+        } else {
+            auto bits = bplistReadUInt(d, off + 1, 8);
+            std::memcpy(&v, &bits, 8);
+        }
+        out = BPListNode{};
+        out.type = BPType::Real;
+        out.realValue = v;
+        return true;
+    }
+    case 0x3: {
+        if (off + 9 > size) return false;
+        const auto bits = bplistReadUInt(d, off + 1, 8);
+        double v{};
+        std::memcpy(&v, &bits, 8);
+        out = BPListNode{};
+        out.type = BPType::Date;
+        out.realValue = v;
+        return true;
+    }
+    case 0x4:
+    case 0x5:
+    case 0x6:
+    case 0x7: {
+        BPLength len{};
+        if (!bpReadLength(d, size, off, info, len) || len.count > size - len.pos) return false;
+        if (type == 0x4) {
+            out = BPListNode::ofData(std::string(reinterpret_cast<const char*>(d + len.pos), len.count));
+        } else if (type == 0x7) {
+            out = BPListNode::ofString(std::string(reinterpret_cast<const char*>(d + len.pos), len.count));
+        } else {
+            auto s = bplistStringToUtf8(d, size, off);
+            if (!s) return false;
+            out = BPListNode::ofString(std::move(*s));
+        }
+        return true;
+    }
+    case 0x8: {
+        const auto n = static_cast<std::uint8_t>(info + 1);
+        if (n > 8 || off + 1 + n > size) return false;
+        out = BPListNode{};
+        out.type = BPType::UID;
+        out.intValue = bplistReadUInt(d, off + 1, n);
+        return true;
+    }
+    case 0xA:
+    case 0xB:
+    case 0xC: {
+        BPLength len{};
+        if (!bpReadLength(d, size, off, info, len) || len.count > (size - len.pos) / refSize) return false;
+        out = BPListNode{};
+        out.type = type == 0xA ? BPType::Array : (type == 0xB ? BPType::OrderedSet : BPType::Set);
+        out.items.reserve(static_cast<std::size_t>(len.count));
+        for (std::uint64_t i{}; i < len.count; ++i) {
+            const auto child = bplistReadUInt(d, len.pos + i * refSize, refSize);
+            BPListNode node{};
+            if (!bpParseObject(d, size, table, refSize, child, node, depth + 1, active)) return false;
+            out.items.push_back(std::move(node));
+        }
+        return true;
+    }
+    case 0xD: {
+        BPLength len{};
+        if (!bpReadLength(d, size, off, info, len) || len.count > (size - len.pos) / (2 * refSize)) return false;
+        out = BPListNode{};
+        out.type = BPType::Dict;
+        for (std::uint64_t i{}; i < len.count; ++i) {
+            const auto keyIdx = bplistReadUInt(d, len.pos + i * refSize, refSize);
+            const auto valIdx = bplistReadUInt(d, len.pos + (len.count + i) * refSize, refSize);
+            if (keyIdx >= table.size()) return false;
+            auto key = bplistStringToUtf8(d, size, table[keyIdx]);
+            if (!key) return false;
+            BPListNode value{};
+            if (!bpParseObject(d, size, table, refSize, valIdx, value, depth + 1, active)) return false;
+            out.dict.emplace_back(std::move(*key), std::move(value));
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+/// 解析完整 bplist 为保留全类型的对象树；失败时返回 nullopt（上层回退旧实现）。
+static std::optional<BPListNode> bpParse(const std::string_view bytes) {
+    const auto size = bytes.size();
+    if (size < 40 || bytes.substr(0, 6) != "bplist") return std::nullopt;
+    const auto* d = reinterpret_cast<const std::uint8_t*>(bytes.data());
+    const auto t = size - 32;
+    const auto offsetIntSize = d[t + 6];
+    const auto refSize = d[t + 7];
+    if (offsetIntSize == 0 || offsetIntSize > 8 || refSize == 0 || refSize > 8) return std::nullopt;
+    const auto numObjects = bplistReadUInt(d, t + 8, 8);
+    const auto topObject = bplistReadUInt(d, t + 16, 8);
+    const auto tableOff = bplistReadUInt(d, t + 24, 8);
+    if (numObjects == 0 || tableOff > t || numObjects > (t - tableOff) / offsetIntSize) return std::nullopt;
+
+    std::vector<std::uint64_t> table{};
+    table.reserve(static_cast<std::size_t>(numObjects));
+    for (std::uint64_t i{}; i < numObjects; ++i)
+        table.push_back(bplistReadUInt(d, tableOff + i * offsetIntSize, offsetIntSize));
+    std::vector<std::uint8_t> active(static_cast<std::size_t>(numObjects), 0);
+    BPListNode root{};
+    if (!bpParseObject(d, size, table, refSize, topObject, root, 0, active)) return std::nullopt;
+    return root;
+}
+
+/// 展平成对象表；容器内容转为对象引用，节点本身只保留标量。
+struct BPFlat {
+    BPListNode node{};
+    std::vector<std::uint64_t> refs{};
+};
+static bool bpFlatten(const BPListNode& n, std::vector<BPFlat>& out, const int depth = 0) {
+    if (depth > 64 || out.size() > 5000000) return false;
+    const auto self = out.size();
+    BPFlat f{};
+    f.node = n;
+    f.node.items.clear();
+    f.node.dict.clear();
+    out.push_back(std::move(f));
+    if (n.type == BPType::Array || n.type == BPType::Set || n.type == BPType::OrderedSet) {
+        for (const auto& c : n.items) {
+            const auto idx = out.size();
+            if (!bpFlatten(c, out, depth + 1)) return false;
+            out[self].refs.push_back(idx);
+        }
+    } else if (n.type == BPType::Dict) {
+        // bplist dict 布局：先全部 key 引用，再全部 value 引用。
+        std::vector<std::uint64_t> keys{};
+        std::vector<std::uint64_t> vals{};
+        for (const auto& [k, v] : n.dict) {
+            const auto keyIdx = out.size();
+            if (!bpFlatten(BPListNode::ofString(k), out, depth + 1)) return false;
+            keys.push_back(keyIdx);
+            const auto valIdx = out.size();
+            if (!bpFlatten(v, out, depth + 1)) return false;
+            vals.push_back(valIdx);
+        }
+        out[self].refs = std::move(keys);
+        out[self].refs.insert(out[self].refs.end(), vals.begin(), vals.end());
+    }
+    return true;
+}
+
+/// UTF-8 -> UTF-16BE 单元（含代理对）。
+static std::vector<std::uint16_t> bpUtf8ToUtf16(const std::string& s) {
+    std::vector<std::uint16_t> units{};
+    auto p = reinterpret_cast<const unsigned char*>(s.data());
+    const auto end = p + s.size();
+    while (p < end) {
+        std::uint32_t cp{};
+        if (*p < 0x80) {
+            cp = *p++;
+        } else if ((*p & 0xE0) == 0xC0 && p + 1 < end) {
+            cp = (*p++ & 0x1F) << 6;
+            cp |= *p++ & 0x3F;
+        } else if ((*p & 0xF0) == 0xE0 && p + 2 < end) {
+            cp = (*p++ & 0x0F) << 12;
+            cp |= (*p++ & 0x3F) << 6;
+            cp |= *p++ & 0x3F;
+        } else if ((*p & 0xF8) == 0xF0 && p + 3 < end) {
+            cp = (*p++ & 0x07) << 18;
+            cp |= (*p++ & 0x3F) << 12;
+            cp |= (*p++ & 0x3F) << 6;
+            cp |= *p++ & 0x3F;
+        } else {
+            ++p;
+            cp = 0xFFFD;
+        }
+        if (cp <= 0xFFFF) {
+            units.push_back(static_cast<std::uint16_t>(cp));
+        } else {
+            cp -= 0x10000;
+            units.push_back(static_cast<std::uint16_t>(0xD800 | (cp >> 10)));
+            units.push_back(static_cast<std::uint16_t>(0xDC00 | (cp & 0x3FF)));
+        }
+    }
+    return units;
+}
+
+static void bpWriteObject(std::string& out, const BPFlat& f, const int refSize) {
+    const auto& n = f.node;
+    switch (n.type) {
+    case BPType::Null:
+        out.push_back('\x00');
+        break;
+    case BPType::Bool:
+        out.push_back(n.boolValue ? '\x09' : '\x08');
+        break;
+    case BPType::Int: {
+        const int nb = calcIntBytes(n.intValue);
+        int sp = 0;
+        for (int t = nb; t > 1; t >>= 1) ++sp;
+        out.push_back(static_cast<char>(0x10 | sp));
+        appendBE(out, n.intValue, nb);
+        break;
+    }
+    case BPType::Int128:
+        if (n.int128Bytes.size() == 16) {
+            out.push_back('\x14'); // 0x1 | log2(16)
+            out.append(n.int128Bytes);
+        } else {
+            out.push_back('\x13'); // 退化成 8 字节 0，保证结构合法
+            appendBE(out, 0, 8);
+        }
+        break;
+    case BPType::Real:
+    case BPType::Date: {
+        out.push_back(n.type == BPType::Real ? '\x23' : '\x33');
+        std::uint64_t bits{};
+        std::memcpy(&bits, &n.realValue, 8);
+        appendBE(out, bits, 8);
+        break;
+    }
+    case BPType::Data:
+        writeLength(out, n.strValue.size(), 0x40);
+        out.append(n.strValue);
+        break;
+    case BPType::String: {
+        if (isAsciiOnly(n.strValue)) {
+            writeLength(out, n.strValue.size(), 0x50);
+            out.append(n.strValue);
+        } else {
+            auto units = bpUtf8ToUtf16(n.strValue);
+            writeLength(out, units.size(), 0x60);
+            for (auto u : units) appendBE(out, u, 2);
+        }
+        break;
+    }
+    case BPType::UID: {
+        const int nb = calcIntBytes(n.intValue);
+        out.push_back(static_cast<char>(0x80u | (nb - 1)));
+        appendBE(out, n.intValue, nb);
+        break;
+    }
+    case BPType::Array:
+    case BPType::Set:
+    case BPType::OrderedSet: {
+        const std::uint8_t tag = n.type == BPType::Array ? 0xA0 : (n.type == BPType::Set ? 0xC0 : 0xB0);
+        writeLength(out, f.refs.size(), tag);
+        for (auto r : f.refs) appendBE(out, r, refSize);
+        break;
+    }
+    case BPType::Dict:
+        writeLength(out, f.refs.size() / 2, 0xD0);
+        for (auto r : f.refs) appendBE(out, r, refSize);
+        break;
+    }
+}
+
+static std::string bpSerialize(const BPListNode& root) {
+    std::vector<BPFlat> flat{};
+    if (!bpFlatten(root, flat) || flat.empty()) return {};
+    const auto count = flat.size();
+    int refSize = 1;
+    if (count > 0xFF) refSize = 2;
+    if (count > 0xFFFF) refSize = 4;
+    if (count > 0xFFFFFFFFULL) refSize = 8;
+
+    std::string out{};
+    out.append("bplist00", 8);
+    std::vector<std::uint64_t> offsets{};
+    offsets.reserve(count);
+    for (const auto& f : flat) {
+        offsets.push_back(out.size());
+        bpWriteObject(out, f, refSize);
+    }
+    const auto maxOff = out.size();
+    int offSize = 1;
+    if (maxOff > 0xFF) offSize = 2;
+    if (maxOff > 0xFFFF) offSize = 4;
+    if (maxOff > 0xFFFFFFFFULL) offSize = 8;
+    const auto tableOff = out.size();
+    for (auto o : offsets) appendBE(out, o, offSize);
+
+    out.append(6, '\0');
+    out.push_back(static_cast<char>(offSize));
+    out.push_back(static_cast<char>(refSize));
+    appendBE(out, count, 8);
+    appendBE(out, 0, 8); // 根节点恒为对象 0
+    appendBE(out, tableOff, 8);
+    return out;
+}
+
+/// 原生树 -> XML。XML 无法表达的类型输出固定降级占位，写回时靠 bpDegrade 等价
+/// 判定识别「上层没动过这个节点」，从而把原生节点原样保留下来。
+static void bpNodeToXML(const BPListNode& n, std::string& out, const int depth) {
+    const std::string ind(depth, '\t');
+    switch (n.type) {
+    case BPType::Null:
+        out += ind + "<false/>\n";
+        break;
+    case BPType::Bool:
+        out += ind + (n.boolValue ? "<true/>\n" : "<false/>\n");
+        break;
+    case BPType::Int:
+        out += ind + "<integer>" + std::to_string(static_cast<std::int64_t>(n.intValue)) + "</integer>\n";
+        break;
+    case BPType::Int128:
+    case BPType::Set:
+    case BPType::OrderedSet:
+        out += ind + "<data></data>\n";
+        break;
+    case BPType::Real:
+        out += ind + "<real>" + std::format("{:.17g}", n.realValue) + "</real>\n";
+        break;
+    case BPType::Date:
+        out += ind + "<date>" + bplistDateToISO8601(n.realValue) + "</date>\n";
+        break;
+    case BPType::Data:
+        out += ind + "<data>" + bpBase64Encode(n.strValue) + "</data>\n";
+        break;
+    case BPType::String:
+        out += ind + "<string>" + xmlEscape(n.strValue) + "</string>\n";
+        break;
+    case BPType::UID:
+        out += ind + "<dict>\n";
+        out += ind + "\t<key>CF$UID</key>\n";
+        out += ind + "\t<integer>" + std::to_string(n.intValue) + "</integer>\n";
+        out += ind + "</dict>\n";
+        break;
+    case BPType::Array:
+        out += ind + "<array>\n";
+        for (const auto& c : n.items) bpNodeToXML(c, out, depth + 1);
+        out += ind + "</array>\n";
+        break;
+    case BPType::Dict:
+        out += ind + "<dict>\n";
+        for (const auto& [k, v] : n.dict) {
+            out += ind + "\t<key>" + xmlEscape(k) + "</key>\n";
+            bpNodeToXML(v, out, depth + 1);
+        }
+        out += ind + "</dict>\n";
+        break;
+    }
+}
+
+static std::string bpTreeToXMLDoc(const BPListNode& root) {
+    std::string out = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                      "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+                      "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+                      "<plist version=\"1.0\">\n";
+    bpNodeToXML(root, out, 0);
+    out += "</plist>\n";
+    return out;
+}
+
+/// XML -> 对象树。这里故意不把 dict{CF$UID} 还原成 UID：保持与 bpDegrade(UID)
+/// 相同的形态，合并时才能判定「未改动」并沿用原生 UID 节点。
+static std::optional<BPListNode> bpParseXMLNode(const pugi::xml_node& node, const int depth = 0) {
+    if (depth > 64) return std::nullopt;
+    const std::string_view name(node.name());
+    BPListNode n{};
+    if (name == "true" || name == "false") return BPListNode::ofBool(name == "true");
+    if (name == "integer") return BPListNode::ofInt(parsePlistInteger(node.child_value()));
+    if (name == "real") {
+        n.type = BPType::Real;
+        n.realValue = std::strtod(node.child_value(), nullptr);
+        return n;
+    }
+    if (name == "date") {
+        n.type = BPType::Date;
+        n.realValue = iso8601ToBplistDate(node.child_value()).value_or(0.0);
+        return n;
+    }
+    if (name == "data") return BPListNode::ofData(bpBase64Decode(node.child_value()));
+    if (name == "string") return BPListNode::ofString(node.child_value());
+    if (name == "array") {
+        n.type = BPType::Array;
+        for (auto c = node.first_child(); c; c = c.next_sibling()) {
+            if (c.type() != pugi::node_element) continue;
+            auto child = bpParseXMLNode(c, depth + 1);
+            if (!child) return std::nullopt;
+            n.items.push_back(std::move(*child));
+        }
+        return n;
+    }
+    if (name == "dict") {
+        n.type = BPType::Dict;
+        for (auto it = node.begin(); it != node.end(); ++it) {
+            if (std::string_view(it->name()) != "key") continue;
+            std::string key(it->child_value());
+            auto val = it->next_sibling();
+            while (val && val.type() != pugi::node_element) val = val.next_sibling();
+            if (!val) return std::nullopt;
+            auto v = bpParseXMLNode(val, depth + 1);
+            if (!v) return std::nullopt;
+            n.dict.emplace_back(std::move(key), std::move(*v));
+            it = val; // 跳过 value 节点
+        }
+        return n;
+    }
+    return BPListNode::ofString("");
+}
+
+static std::optional<BPListNode> bpXMLToTree(const std::string_view xml) {
+    pugi::xml_document doc{};
+    if (!doc.load_buffer(xml.data(), xml.size())) return std::nullopt;
+    auto plistNode = doc.child(PLIST_TAG_ROOT);
+    if (!plistNode) return std::nullopt;
+    for (auto c = plistNode.first_child(); c; c = c.next_sibling())
+        if (c.type() == pugi::node_element) return bpParseXMLNode(c);
+    return std::nullopt;
+}
+
+/// 把原生节点降级成它在 XML 中间表示里的形态，用于判断该节点是否未被改动。
+static BPListNode bpDegrade(const BPListNode& n) {
+    if (n.type == BPType::Null) return BPListNode::ofBool(false);
+    if (n.type == BPType::Set || n.type == BPType::OrderedSet || n.type == BPType::Int128)
+        return BPListNode::ofData("");
+    if (n.type == BPType::UID) {
+        BPListNode r{};
+        r.type = BPType::Dict;
+        r.dict.emplace_back("CF$UID", BPListNode::ofInt(n.intValue));
+        return r;
+    }
+    if (n.type == BPType::Array) {
+        BPListNode r{};
+        r.type = BPType::Array;
+        for (const auto& c : n.items) r.items.push_back(bpDegrade(c));
+        return r;
+    }
+    if (n.type == BPType::Dict) {
+        BPListNode r{};
+        r.type = BPType::Dict;
+        for (const auto& [k, v] : n.dict) r.dict.emplace_back(k, bpDegrade(v));
+        return r;
+    }
+    return n;
+}
+
+static bool bpEqual(const BPListNode& a, const BPListNode& b) {
+    if (a.type != b.type) return false;
+    switch (a.type) {
+    case BPType::Null:
+        return true;
+    case BPType::Bool:
+        return a.boolValue == b.boolValue;
+    case BPType::Int:
+    case BPType::UID:
+        return a.intValue == b.intValue;
+    case BPType::Int128:
+        return a.int128Bytes == b.int128Bytes;
+    case BPType::Real:
+        return a.realValue == b.realValue; // 17 位有效数字往返可精确复原
+    case BPType::Date:
+        return std::abs(a.realValue - b.realValue) < 1e-5; // ISO8601 只保留到微秒
+    case BPType::Data:
+    case BPType::String:
+        return a.strValue == b.strValue;
+    case BPType::Array:
+    case BPType::Set:
+    case BPType::OrderedSet:
+        if (a.items.size() != b.items.size()) return false;
+        for (std::size_t i{}; i < a.items.size(); ++i)
+            if (!bpEqual(a.items[i], b.items[i])) return false;
+        return true;
+    case BPType::Dict:
+        if (a.dict.size() != b.dict.size()) return false;
+        for (std::size_t i{}; i < a.dict.size(); ++i) {
+            if (a.dict[i].first != b.dict[i].first) return false;
+            if (!bpEqual(a.dict[i].second, b.dict[i].second)) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+/// 结构对齐合并：以 newN（上层编辑结果）为准，未变化的分支沿用 oldN 原生节点。
+static BPListNode bpMerge(const BPListNode& oldN, const BPListNode& newN, const int depth = 0) {
+    if (bpEqual(bpDegrade(oldN), newN)) return oldN;
+    if (depth > 64) return newN;
+    if (oldN.type == BPType::Dict && newN.type == BPType::Dict) {
+        BPListNode r{};
+        r.type = BPType::Dict;
+        for (const auto& [k, v] : newN.dict) {
+            const BPListNode* o = nullptr;
+            for (const auto& [ok, ov] : oldN.dict)
+                if (ok == k) {
+                    o = &ov;
+                    break;
+                }
+            r.dict.emplace_back(k, o ? bpMerge(*o, v, depth + 1) : v);
+        }
+        return r;
+    }
+    if (oldN.type == BPType::Array && newN.type == BPType::Array && oldN.items.size() == newN.items.size()) {
+        BPListNode r{};
+        r.type = BPType::Array;
+        for (std::size_t i{}; i < newN.items.size(); ++i)
+            r.items.push_back(bpMerge(oldN.items[i], newN.items[i], depth + 1));
+        return r;
+    }
+    return newN;
+}
+
+} // namespace
+
 /**
  * @brief 读取 plist 文件并确保返回 XML 格式。
  *
@@ -1216,33 +2054,75 @@ std::optional<std::string> ReadPListAsXML(const std::filesystem::path& filePath)
     auto dataOpt = ReadFile(filePath);
     if (!dataOpt) return std::nullopt;
 
-    auto format = DetectPListFormat(*dataOpt);
-    switch (format) {
-    case PListFormat::XML:
-        return dataOpt;
-    case PListFormat::Binary: {
-        Logger::debug("detected binary plist, converting to XML:", filePath.string());
-        return BPListToXML(*dataOpt);
-    }
-    case PListFormat::Unknown:
-    default:
-        Logger::debug("unknown plist format, treating as XML:", filePath.string());
+    const auto format = DetectPListFormat(*dataOpt);
+    if (format != PListFormat::Binary) {
+        // XML（以及按 XML 处理的未知格式）：缓存原始字节与原格式，写回时保持 XML。
+        std::lock_guard lock(g_plistSourceMutex);
+        g_plistSources[plistCacheKey(filePath)] = PListSourceBytes{*dataOpt, *dataOpt, PListFormat::XML, {}};
         return dataOpt;
     }
+
+    Logger::debug("detected binary plist, parsing native object tree:", filePath.string());
+    auto tree = bpParse(*dataOpt);
+    std::string xml{};
+    if (tree) {
+        xml = bpTreeToXMLDoc(*tree);
+    } else if (auto fallback = BPListToXML(*dataOpt)) {
+        // 原生解析失败时退回旧解析器（不缓存对象树，仍可走格式保持/字节透传）。
+        xml = std::move(*fallback);
+    }
+    if (xml.empty()) return std::nullopt;
+
+    std::shared_ptr<BPListNode> ptr{};
+    if (tree) ptr = std::make_shared<BPListNode>(std::move(*tree));
+    {
+        std::lock_guard lock(g_plistSourceMutex);
+        g_plistSources[plistCacheKey(filePath)] = PListSourceBytes{*dataOpt, xml, PListFormat::Binary, std::move(ptr)};
+    }
+    return xml;
 }
 
 /**
- * @brief 将 XML 格式的 plist 字符串转换为 Binary Plist 后写入指定文件。
+ * @brief 把（可能被修改过的）XML plist 写回文件。
  *
- * zsign 的 -C 检查等工具依赖 plist 文件为 Binary Plist（bplist00）格式，
- * 因此在将修改后的 Info.plist 写回 IPA 时，使用本函数进行格式转换。
- * 若转换失败则回退为直接写入 XML。
+ * - Info.plist 强制写成 bplist00：zsign -C 等工具的 plist 解析器只认二进制
+ *   plist，XML 的 Info.plist 会读不到 CFBundleExecutable，被判定为「未签名」。
+ * - 原文件是 bplist：把新 XML 解析成树，与解析原始字节得到的原生对象树做
+ *   结构对齐合并（未改动分支保留 set / UID / null / Int128 等原生类型），
+ *   再重新序列化为 bplist。
+ * - 其余 plist（InfoPlist.strings 等）：按原格式写回；内容未变时字节级透传。
  */
 bool WritePListFile(const std::filesystem::path& filePath, const std::string_view xmlPlist) {
-    if (auto bpOpt = XMLToBPList(xmlPlist)) {
-        return WriteFile(filePath, *bpOpt);
+    const bool requireBinary = filePath.filename() == FILE_NAME_PLIST;
+
+    PListSourceBytes cached{};
+    bool hit = false;
+    {
+        std::lock_guard lock(g_plistSourceMutex);
+        auto it = g_plistSources.find(plistCacheKey(filePath));
+        if (it != g_plistSources.end()) {
+            cached = it->second;
+            hit = true;
+        }
     }
-    Logger::warn("failed to convert plist to binary, fallback to XML:", filePath.string());
+
+    // 内容未变且已经满足格式要求时，直接写回原始字节（字节级无损）。
+    if (hit && cached.xml == xmlPlist && (!requireBinary || cached.format == PListFormat::Binary))
+        return WriteFile(filePath, cached.original);
+
+    // 原生对象树打补丁：bplist 特有类型不经过 XML 往返。
+    std::string bytes{};
+    if (hit && cached.format == PListFormat::Binary && cached.tree) {
+        if (auto newTree = bpXMLToTree(xmlPlist)) bytes = bpSerialize(bpMerge(*cached.tree, *newTree));
+    }
+
+    // Info.plist（或原本就是 bplist 的文件）必须以 bplist00 落盘。
+    if (bytes.empty() && (requireBinary || (hit && cached.format == PListFormat::Binary))) {
+        if (auto bpOpt = XMLToBPList(xmlPlist)) bytes = std::move(*bpOpt);
+    }
+    if (!bytes.empty()) return WriteFile(filePath, bytes);
+
+    // 其余场景：按传入的 XML 文本写回（含无读取记录的新文件）。
     return WriteFile(filePath, xmlPlist);
 }
 

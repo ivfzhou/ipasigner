@@ -22,6 +22,7 @@
 #include <windows.h>
 #endif
 #include <cstdlib>
+#include <exception>
 
 #include "Logger.tpp"
 #include "argument/argument.hpp"
@@ -44,13 +45,23 @@ int main(const int argc, const char* argv[]) {
 
     // 解析命令行参数。
     auto opts = ipasigner::ParseCommandFlags(argc, argv);
-    if (!opts) std::exit(ipasigner::EXIT_CODE_PARSE_OPTIONS_ERROR);
+    if (!opts) return ipasigner::EXIT_CODE_PARSE_OPTIONS_ERROR;
 
     // 根据命令行参数设置日志详细程度。
     ipasigner::Logger::setVerbose(opts->verbose);
 
-    // 执行签名。
-    if (opts->sign) std::exit(ipasigner::DoSign(*opts));
+    if (!opts->sign) return 0;
 
-    return 0;
+    // 必须捕获异常：未捕获异常会直接 std::terminate，MSVC 默认不展开栈，
+    // DoSign 内的 RAII 清理守卫就不会执行，临时目录会残留。
+    // 同时用 return 而非 std::exit，保证 main 的局部对象也正常析构。
+    try {
+        return ipasigner::DoSign(*opts);
+    } catch (const std::exception& e) {
+        ipasigner::Logger::error("unhandled exception:", e.what());
+        return ipasigner::EXIT_CODE_SIGN_ERROR;
+    } catch (...) {
+        ipasigner::Logger::error("unhandled unknown exception");
+        return ipasigner::EXIT_CODE_SIGN_ERROR;
+    }
 }

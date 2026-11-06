@@ -17,7 +17,7 @@
  * 提供构建 Apple CodeSignature 各 Slot 的函数：
  * - Requirements Slot
  * - Entitlements Slot / DER Entitlements Slot
- * - CodeDirectory Slot（SHA1 / SHA256）
+ * - CodeDirectory Slot（SHA256-only 主版本，对齐 codesign）
  * - CMS Signature Slot
  * - SuperBlob 组装
  *
@@ -47,7 +47,7 @@ namespace com::gitee::ivfzhou::ipasigner {
  * @param teamId 团队标识符（Team ID），可为空字符串。
  * @param subjectCN 签名证书的主体通用名称（用于 Requirements 表达式），可为空字符串。
  * @param entitlements 权限配置 XML 内容，仅主可执行文件需要非空值。
- * @param infoPlistSHA1 Info.plist 文件的 SHA1 原始哈希（20 字节二进制数据）。
+ * @param infoPlistSHA1 兼容保留，SHA256-only 签名不再使用。
  * @param infoPlistSHA256 Info.plist 文件的 SHA256 原始哈希（32 字节二进制数据）。
  * @param codeResourcesData CodeResources plist 文件的原始内容（用于资源完整性校验）。
  * @return 成功返回 true，失败返回 false 并输出错误日志。
